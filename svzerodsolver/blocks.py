@@ -30,9 +30,13 @@
 # NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 # SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+import pdb
 import numpy as np
 from collections import defaultdict
-
+#from junction_loss_coeff import junction_loss_coeff
+from .junction_loss_coeff import junction_loss_coeff
+from tensorflow import keras
+DNN_model = keras.models.load_model('../svzerodsolver/DNN_model_oct')
 
 class LPNVariable:
     def __init__(self, value, units, name="NoName", vtype='ArbitraryVariable'):
@@ -235,6 +239,110 @@ class Junction(LPNBlock):
 
         tmp += (self.flow_directions[-1],)
         self.mat['F'].append(tmp)
+
+class UNIFIED0DJunction(Junction):
+    def __init__(self, connecting_block_list=None, name="NoNameJunction", flow_directions=None):
+        Junction.__init__(self, connecting_block_list, name=name, flow_directions=flow_directions)
+
+        if np.sum(np.asarray(self.flow_directions)<0) != 1 :
+            raise ValueError("Junction must have exactly one inlet.")
+        self.inlet_index = np.asarray(np.nonzero(np.asarray(flow_directions)<0)).astype(int)[0][0]
+        self.outlet_indices = list(np.nonzero(np.asarray(self.flow_directions)>=0)[0])
+
+        self.num_inlets = 1
+        self.num_outlets = len(flow_directions)-1
+        # Set geometric parameters
+
+        self.area = np.asarray([0.5, 0.5, 0.5])
+        self.direction_change = np.asarray([0.9,0.9,0.9])
+        self.junction_length = np.asarray([11,11,11])
+        self.flow_time_der = np.asarray([0.001, 0.001,0.004])
+        self.flow_directions = flow_directions
+
+    def update_solution(self,args):
+        inlet_index = self.inlet_index
+        outlet_indices = self.outlet_indices
+        curr_y = args['Solution']  # the current solution for all unknowns in our 0D model
+        wire_dict = args['Wire dictionary']
+        rho = 1.06 # density of blood
+        # SET F MATRIX
+        self.mat['F'] = [(1.,) + (0,) * (2 * i + 1) + (-1,) + (0,) * (2 * self.num_connections - 2 * i - 3) for i in
+                 range(self.num_connections - 1)] # pressure drop over junctions rows
+        tmp = (0,)
+        for d in self.flow_directions[:-1]:
+            tmp += (d,)
+            tmp += (0,)
+        tmp += (self.flow_directions[-1],) # mass conservation
+        self.mat['F'].append(tmp)
+
+        # SET C VECTOR
+
+        U = np.asarray([ np.divide(curr_y[wire_dict[self.connecting_wires_list[i]].LPN_solution_ids[1]],
+                       self.area[i]) for i in range(len(self.flow_directions))])
+
+        U[np.asarray(self.flow_directions)>=0] = -1 * U[np.asarray(self.flow_directions)>=0]
+        if np.sum(np.asarray(U)!=0) == 0:
+            pressure_loss_mynard = np.multiply(0,U)
+        else:
+            C, K = junction_loss_coeff(U, self.area, self.direction_change) # run JLC function
+            pressure_loss_mynard = (rho*np.multiply(
+                C[1:,], np.square(U[outlet_indices])) + 0.5*rho*np.subtract(
+                np.square(U[inlet_index]), np.square(U[outlet_indices])))
+
+        self.mat['C']  =  -1* [pressure_loss_mynard[i] for i in range(len(outlet_indices))] + [0]
+
+
+class DNNJunction(Junction):
+    def __init__(self, connecting_block_list=None, name="NoNameJunction", flow_directions=None):
+        Junction.__init__(self, connecting_block_list, name=name, flow_directions=flow_directions)
+
+        if np.sum(np.asarray(self.flow_directions)<0) != 1 :
+            raise ValueError("Junction must have exactly one inlet.")
+        self.inlet_index = np.asarray(np.nonzero(np.asarray(flow_directions)<0)).astype(int)[0][0]
+        self.outlet_indices = list(np.nonzero(np.asarray(self.flow_directions)>=0)[0])
+
+        self.num_inlets = 1
+        self.num_outlets = len(flow_directions)-1
+        # Set geometric parameters
+
+        self.area = [0.5, 0.5, 0.5]
+        self.direction_change = [0.9,0.9,0.9]
+        self.junction_length = [11,11,11]
+        self.flow_time_der = [0.001, 0.001,0.004]
+        self.flow_directions = flow_directions
+
+    def update_solution(self,args):
+        inlet_index = self.inlet_index
+        outlet_indices = self.outlet_indices
+        curr_y = args['Solution']  # the current solution for all unknowns in our 0D model
+        wire_dict = args['Wire dictionary']
+
+        # SET F MATRIX
+        self.mat['F'] = [(1.,) + (0,) * (2 * i + 1) + (-1,) + (0,) * (2 * self.num_connections - 2 * i - 3) for i in
+                 range(self.num_connections - 1)] # pressure drop over junctions rows
+        tmp = (0,)
+        for d in self.flow_directions[:-1]:
+            tmp += (d,)
+            tmp += (0,)
+        tmp += (self.flow_directions[-1],) # mass conservation
+        self.mat['F'].append(tmp)
+
+        # SET C VECTOR
+
+        self.mat['C']  =  -1* [DNN_model.predict(np.reshape([
+            curr_y[wire_dict[self.connecting_wires_list[inlet_index]].LPN_solution_ids[0]], # inlet pressure
+            curr_y[wire_dict[self.connecting_wires_list[inlet_index]].LPN_solution_ids[1]]/self.area[inlet_index], # inlet velocity
+            curr_y[wire_dict[self.connecting_wires_list[outlet_index]].LPN_solution_ids[1]]/self.area[outlet_index], # outlet velocity,
+            curr_y[wire_dict[self.connecting_wires_list[inlet_index]].LPN_solution_ids[1]], # inlet flow
+            curr_y[wire_dict[self.connecting_wires_list[outlet_index]].LPN_solution_ids[1]], # outlet flow
+            self.area[inlet_index], #inlet area
+            self.area[outlet_index], # outlet area
+            self.direction_change[outlet_index], # direction change
+            self.junction_length[outlet_index], # junction length
+            self.num_outlets, # number of outlets
+            self.flow_time_der[outlet_index] # flow time derivative
+            ], (1,11))) for outlet_index in outlet_indices] + [0]
+
 
 
 class BloodVessel(LPNBlock):

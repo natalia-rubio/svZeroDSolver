@@ -207,6 +207,11 @@ def create_junction_blocks(parameters, custom_0d_elements_arguments):
         if (+1 in flow_directions) and (-1 in flow_directions):
             if junction["junction_type"] == "NORMAL_JUNCTION":
                 junction_blocks[junction_name] = ntwku.Junction(connecting_block_list = connecting_block_list, name = junction_name, flow_directions = flow_directions)
+            elif junction["junction_type"] == "DNN_JUNCTION":
+                junction_blocks[junction_name] = ntwku.DNNJunction(connecting_block_list = connecting_block_list, name = junction_name, flow_directions = flow_directions)
+            elif junction["junction_type"] == "UNIFIED0D_JUNCTION":
+                junction_blocks[junction_name] = ntwku.UNIFIED0DJunction(connecting_block_list = connecting_block_list, name = junction_name, flow_directions = flow_directions)
+
             else: # this is a custom, user-defined junction block
                 custom_0d_elements_arguments.junction_args[junction_name].update({"connecting_block_list" : connecting_block_list, "flow_directions" : flow_directions, "name" : junction_name})
                 junction_blocks[junction_name] = create_custom_element(junction["junction_type"], custom_0d_elements_arguments.junction_args[junction_name])
