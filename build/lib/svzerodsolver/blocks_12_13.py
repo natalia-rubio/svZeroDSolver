@@ -252,7 +252,6 @@ class UNIFIED0DJunction(Junction):
         self.junction_parameters = junction_parameters
 
     def update_solution(self, args):
-        #print("updating solution: new Newton iteration")
         curr_y = args['Solution']  # the current solution for all unknowns in our 0D model
         wire_dict = args['Wire dictionary'] # connectivity dictionary
         rho = 1.06 # density of blood
@@ -274,7 +273,6 @@ class UNIFIED0DJunction(Junction):
 
             # IDENTIFY INLETS AND OUTLETS
             inlet_indices = list(np.asarray(np.nonzero(U>0)).astype(int)[0]) # identify inlets
-            max_inlet = np.argmax(U) # index of the inlet with max velocity (serves as dominant inlet where necessary)
             num_inlets = len(inlet_indices) # number of inlets
             outlet_indices = list(np.nonzero(U<=0)[0]) # identify outlets
             num_outlets = len(outlet_indices) # number of outlets
@@ -289,7 +287,7 @@ class UNIFIED0DJunction(Junction):
             # CONFIGURE ANGLES FOR UNIFIED0D
             angles = copy.deepcopy(self.junction_parameters["angles"]) # load angles
             angles.insert(0,0) # add in the angle for the input file "presumed inlet" (first entry)
-            angle_shift = np.pi - angles[max_inlet] # find shift to set first inlet angle to pi
+            angle_shift = np.pi - angles[inlet_indices[0]] # find shift to set first inlet angle to pi
             for i in range(num_branches): # loop over all angles
                 angles[i] = angles[i] + angle_shift # shift all junction angles
             assert len(angles) == num_branches, 'One angle should be provided for each branch'
@@ -297,11 +295,8 @@ class UNIFIED0DJunction(Junction):
 
             # SET F MATRIX
             self.mat['F'] = []
-            for i in range(0,num_branches): # loop over branches- each branch (exept the "presumed inlet" is a row of F)
-                if i == max_inlet:
-                  continue # if the branch is the dominant inlet branch do not add a new column
-                F_row = [0]*(2*num_branches - 1) # row of 0s with 1 in column corresponding to "presumed inlet" branch pressure
-                F_row[2*max_inlet] = 1 # place 1 in column corresponding to dominant inlet pressure
+            for i in range(1,num_branches): # loop over branches- each branch (exept the "presumed inlet" is a row of F)
+                F_row = [1]+[0]*(2*num_branches - 1) # row of 0s with 1 in column corresponding to "presumed inlet" branch pressure
                 F_row[2*i] = -1 # place -1 in column corresponding to each branch pressure
                 self.mat['F'].append(tuple(F_row)) # append row to F matrix
             # mass conservation row (copy-pasted)
@@ -310,22 +305,22 @@ class UNIFIED0DJunction(Junction):
                 tmp += (d,)
                 tmp += (0,)
             tmp += (self.flow_directions[-1],) # mass conservation row
-            self.mat['F'].append(tmp) # append row to F matrix
+            self.mat['F'].append(tmp)
 
             # SET C VECTOR
             C, K, eta_j = junction_loss_coeff(U, np.asarray(areas), np.asarray(angles)) # run Unified0D junction loss coefficient function
             assert np.size(C) == num_branches, "One coefficient should be returned per branch."
             pressure_loss_unified0d = (rho*np.multiply(
                 C, np.square(U)) + 0.5*rho*np.subtract(
-                np.square(U[max_inlet]), np.square(U))) # compute pressure loss according to the unified 0d model
+                np.square(U[inlet_indices[0]]), np.square(U))) # compute pressure loss according to the unified 0d model
             self.mat['C']  =  [-1*pressure_loss_unified0d[i] for i in range(num_branches)] + [0] # set C vector
-            self.mat['C'].pop(max_inlet)
+            self.mat['C'].pop(inlet_indices[0])
             # SET dC MATRIX
             Q = np.abs(np.divide(U,areas))
             unified0D_derivs_all = []
             for i in range(1,num_branches+1):
                 unified0D_derivs = 2*len(self.flow_directions)*[0,]
-                inlet_index = max_inlet
+                inlet_index = inlet_indices[0]
 #                if np.sum(np.asarray(U)!=0) == 0:
 #                    dQ_in = 0
 #                    dQ_out = 0
@@ -340,7 +335,6 @@ class UNIFIED0DJunction(Junction):
                             Q[outlet_index]*rho*np.cos((3*angles[outlet_index])/4 + np.pi/4)*(np.exp((
                             5*Q[outlet_index])/Q[inlet_index]) - 1)*(eta_j[outlet_indices.index(outlet_index)] - 1))/(
                             areas[inlet_index]*areas[outlet_index])
-
                         dQ_out = (Q[inlet_index]*rho*np.cos((3*angles[outlet_index])/4 + np.pi/4)*(np.exp((
                             5*Q[outlet_index])/Q[inlet_index]) - 1)*(eta_j[outlet_indices.index(outlet_index)] - 1))/(
                             areas[inlet_index]*areas[outlet_index]) - (2*Q[outlet_index]*rho*(np.exp((
@@ -353,10 +347,9 @@ class UNIFIED0DJunction(Junction):
                             areas[outlet_index]**2*Q[inlet_index]) - (Q[outlet_index]*rho)/areas[outlet_index]**2
 
                     except:
-                        print("error in finding analytical derivative")
-                    pdb.set_trace()
-
-                    unified0D_derivs[2*inlet_index+1] = -dQ_in
+                        print
+                        pdb.set_trace()
+                    unified0D_derivs[2*inlet_index+1] = dQ_in
                     unified0D_derivs[2*outlet_index+1] = dQ_out
                     if np.isnan(np.sum(unified0D_derivs))==True:
                         pdb.set_trace()

@@ -57,7 +57,7 @@
                 0
             ],
             "junction_name": "J0",
-            "junction_type": "UNIFIED0D_JUNCTION",
+            "junction_type": "NORMAL_JUNCTION",
 	    "lengths": [
 		1,
 		1

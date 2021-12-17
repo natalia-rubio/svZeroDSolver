@@ -29,7 +29,7 @@
 # LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
 # NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 # SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-import copy
+
 import pdb
 import numpy as np
 from collections import defaultdict
@@ -248,122 +248,104 @@ class Junction(LPNBlock):
 class UNIFIED0DJunction(Junction):
     def __init__(self, junction_parameters, connecting_block_list=None, name="NoNameJunction", flow_directions=None):
         Junction.__init__(self, connecting_block_list, name=name, flow_directions=flow_directions)
-        self.flow_directions = flow_directions
-        self.junction_parameters = junction_parameters
+        pdb.set_trace()
 
-    def update_solution(self, args):
-        #print("updating solution: new Newton iteration")
+        self.inlet_indices = np.asarray(np.nonzero(np.asarray(flow_directions)<0)).astype(int)[0]
+        self.inlet_index = self.inlet_indices[0]
+        self.num_inlets = 1
+        self.outlet_indices = list(np.nonzero(np.asarray(self.flow_directions)>=0)[0])
+        self.num_outlets = len(flow_directions)-1
+        self.angles = junction_parameters["angles"]
+        self.areas = junction_parameters["areas"]
+        self.lengths = junction_parameters["lengths"]
+        self.flow_time_ders = [bb * 0 + 0.002 for bb in self.areas]
+
+        assert len(self.inlet_indices) == 1, 'Junctions must have exactly one inlet.'
+        assert len(self.angles) == self.num_outlets, 'One angle should be provided for each outlet'
+        assert len(self.areas) == self.num_outlets + 1, 'One angle should be provided for each inlet and outlet'
+        assert len(self.lengths) == self.num_outlets, 'One length should be provided for each outlet'
+        assert len(self.flow_time_ders) == self.num_outlets + 1, 'One flow time derivative should be provided for each inlet and outlet'
+
+#        if np.sum(np.asarray(self.flow_directions)<0) != 1 :
+#            raise ValueError("Junction must have exactly one inlet.")
+#        self.inlet_index = np.asarray(np.nonzero(np.asarray(flow_directions)<0)).astype(int)[0][0]
+#        self.outlet_indices = list(np.nonzero(np.asarray(self.flow_directions)>=0)[0])
+#
+#        self.num_inlets = 1
+#        self.num_outlets = len(flow_directions)-1
+#        # Set geometric parameters
+#
+#        self.area = np.asarray([0.5, 0.5, 0.5])
+#        self.direction_change = [0.9,0.9,0.9]
+#        self.direction_change[self.inlet_index] = np.pi
+#        self.direction_change = np.asarray(self.direction_change)
+#        self.junction_length = np.asarray([11,11,11])
+#        self.flow_time_der = np.asarray([0.001, 0.001,0.004])
+#        self.flow_directions = flow_directions
+
+    def update_solution(self,args):
+        pdb.set_trace()
+        inlet_index = self.inlet_index
+        outlet_indices = self.outlet_indices
         curr_y = args['Solution']  # the current solution for all unknowns in our 0D model
-        wire_dict = args['Wire dictionary'] # connectivity dictionary
+        wire_dict = args['Wire dictionary']
         rho = 1.06 # density of blood
-        areas = self.junction_parameters["areas"] # load areas
-        U = np.asarray([-1*self.flow_directions[i] * np.divide(
-            curr_y[wire_dict[self.connecting_wires_list[i]].LPN_solution_ids[1]],
-            areas[i]) for i in range(len(self.flow_directions))]) # calculate velocity in each branch (inlets positive, outlets negative)
 
-        if np.sum(np.asarray(U)!=0) == 0: # if all velociies are 0, treat as normal junction (copy-pasted from normal junction code)
-            self.mat['F'] = [(1.,) + (0,) * (2 * i + 1) + (-1,) + (0,) * (2 * self.num_connections - 2 * i - 3) for i in
-                         range(self.num_connections - 1)]
-            tmp = (0,)
-            for d in self.flow_directions[:-1]:
-                tmp += (d,)
-                tmp += (0,)
-            tmp += (self.flow_directions[-1],)
-            self.mat['F'].append(tmp)
-        else: # otherwise apply Unified0D model
+        # SET F MATRIX
+        self.mat['F'] = [(1.,) + (0,) * (2 * i + 1) + (-1,) + (0,) * (2 * self.num_connections - 2 * i - 3) for i in
+                 range(self.num_connections - 1)] # pressure drop over junctions rows
+        tmp = (0,)
+        for d in self.flow_directions[:-1]:
+            tmp += (d,)
+            tmp += (0,)
+        tmp += (self.flow_directions[-1],) # mass conservation
+        self.mat['F'].append(tmp)
 
-            # IDENTIFY INLETS AND OUTLETS
-            inlet_indices = list(np.asarray(np.nonzero(U>0)).astype(int)[0]) # identify inlets
-            max_inlet = np.argmax(U) # index of the inlet with max velocity (serves as dominant inlet where necessary)
-            num_inlets = len(inlet_indices) # number of inlets
-            outlet_indices = list(np.nonzero(U<=0)[0]) # identify outlets
-            num_outlets = len(outlet_indices) # number of outlets
-            num_branches = len(self.flow_directions) # number of branches
-            # inlet/outlet sanity checks
-            if num_inlets ==0:
-              pdb.set_trace()
-            #assert num_inlets != 0, "No junction inlet."
-            assert num_outlets !=0, "No junction outlet."
-            assert num_inlets + num_outlets == num_branches, "Sum of inlets and outlets does not equal the number of branches."
+        # SET C VECTOR
+        U = np.asarray([ np.divide(curr_y[wire_dict[self.connecting_wires_list[i]].LPN_solution_ids[1]],
+                       self.area[i]) for i in range(len(self.flow_directions))])
 
-            # CONFIGURE ANGLES FOR UNIFIED0D
-            angles = copy.deepcopy(self.junction_parameters["angles"]) # load angles
-            angles.insert(0,0) # add in the angle for the input file "presumed inlet" (first entry)
-            angle_shift = np.pi - angles[max_inlet] # find shift to set first inlet angle to pi
-            for i in range(num_branches): # loop over all angles
-                angles[i] = angles[i] + angle_shift # shift all junction angles
-            assert len(angles) == num_branches, 'One angle should be provided for each branch'
+        U[np.asarray(self.flow_directions)>=0] = -1 * U[np.asarray(self.flow_directions)>=0]
+        if np.sum(np.asarray(U)!=0) == 0:
+            pressure_loss_mynard = np.multiply(0,U)
+        else:
+            C, K, eta_j = junction_loss_coeff(U, self.area, self.direction_change) # run JLC function
+            pressure_loss_mynard = (rho*np.multiply(
+                C[1:,], np.square(U[outlet_indices])) + 0.5*rho*np.subtract(
+                np.square(U[inlet_index]), np.square(U[outlet_indices])))
 
+        self.mat['C']  =  [-1*pressure_loss_mynard[i] for i in range(len(outlet_indices))] + [0]
 
-            # SET F MATRIX
-            self.mat['F'] = []
-            for i in range(0,num_branches): # loop over branches- each branch (exept the "presumed inlet" is a row of F)
-                if i == max_inlet:
-                  continue # if the branch is the dominant inlet branch do not add a new column
-                F_row = [0]*(2*num_branches - 1) # row of 0s with 1 in column corresponding to "presumed inlet" branch pressure
-                F_row[2*max_inlet] = 1 # place 1 in column corresponding to dominant inlet pressure
-                F_row[2*i] = -1 # place -1 in column corresponding to each branch pressure
-                self.mat['F'].append(tuple(F_row)) # append row to F matrix
-            # mass conservation row (copy-pasted)
-            tmp = (0,)
-            for d in self.flow_directions[:-1]:
-                tmp += (d,)
-                tmp += (0,)
-            tmp += (self.flow_directions[-1],) # mass conservation row
-            self.mat['F'].append(tmp) # append row to F matrix
-
-            # SET C VECTOR
-            C, K, eta_j = junction_loss_coeff(U, np.asarray(areas), np.asarray(angles)) # run Unified0D junction loss coefficient function
-            assert np.size(C) == num_branches, "One coefficient should be returned per branch."
-            pressure_loss_unified0d = (rho*np.multiply(
-                C, np.square(U)) + 0.5*rho*np.subtract(
-                np.square(U[max_inlet]), np.square(U))) # compute pressure loss according to the unified 0d model
-            self.mat['C']  =  [-1*pressure_loss_unified0d[i] for i in range(num_branches)] + [0] # set C vector
-            self.mat['C'].pop(max_inlet)
-            # SET dC MATRIX
-            Q = np.abs(np.divide(U,areas))
-            unified0D_derivs_all = []
-            for i in range(1,num_branches+1):
-                unified0D_derivs = 2*len(self.flow_directions)*[0,]
-                inlet_index = max_inlet
-#                if np.sum(np.asarray(U)!=0) == 0:
-#                    dQ_in = 0
-#                    dQ_out = 0
-#                else:
-                if i in outlet_indices:
-                    outlet_index = i
-                    try:
-                        dQ_in = (Q[inlet_index]*rho)/areas[inlet_index]**2 + (5*Q[outlet_index]**3*rho*np.exp((
-                            5*Q[outlet_index])/Q[inlet_index])*((areas[outlet_index]*Q[inlet_index]*np.cos((
-                            3*angles[outlet_index])/4 + np.pi/4)*(eta_j[outlet_indices.index(outlet_index)] - 1))/(
-                            areas[inlet_index]*Q[outlet_index]) + 1))/(areas[outlet_index]**2*Q[inlet_index]**2) - (
-                            Q[outlet_index]*rho*np.cos((3*angles[outlet_index])/4 + np.pi/4)*(np.exp((
-                            5*Q[outlet_index])/Q[inlet_index]) - 1)*(eta_j[outlet_indices.index(outlet_index)] - 1))/(
-                            areas[inlet_index]*areas[outlet_index])
-
-                        dQ_out = (Q[inlet_index]*rho*np.cos((3*angles[outlet_index])/4 + np.pi/4)*(np.exp((
-                            5*Q[outlet_index])/Q[inlet_index]) - 1)*(eta_j[outlet_indices.index(outlet_index)] - 1))/(
-                            areas[inlet_index]*areas[outlet_index]) - (2*Q[outlet_index]*rho*(np.exp((
-                            5*Q[outlet_index])/Q[inlet_index]) - 1)*((areas[outlet_index]*Q[inlet_index]*np.cos((
-                            3*angles[outlet_index])/4 + np.pi/4)*(eta_j[outlet_indices.index(
-                            outlet_index)] - 1))/(areas[inlet_index]*Q[outlet_index]) + 1))/areas[outlet_index]**2 - (
-                            5*Q[outlet_index]**2*rho*np.exp((5*Q[outlet_index])/Q[inlet_index])*((
-                            areas[outlet_index]*Q[inlet_index]*np.cos((3*angles[outlet_index])/4 + np.pi/4)*(
-                            eta_j[outlet_indices.index(outlet_index)] - 1))/(areas[inlet_index]*Q[outlet_index]) + 1))/(
-                            areas[outlet_index]**2*Q[inlet_index]) - (Q[outlet_index]*rho)/areas[outlet_index]**2
-
-                    except:
-                        print("error in finding analytical derivative")
-                    pdb.set_trace()
-
-                    unified0D_derivs[2*inlet_index+1] = -dQ_in
-                    unified0D_derivs[2*outlet_index+1] = dQ_out
-                    if np.isnan(np.sum(unified0D_derivs))==True:
-                        pdb.set_trace()
-
-                unified0D_derivs_all.append(tuple(unified0D_derivs))
-            self.mat["dC"] = unified0D_derivs_all
-            #pdb.set_trace()
+        # SET dC MATRIX
+        Q = np.abs(np.divide(U,self.area))
+        unified0D_derivs_all = [2*len(self.flow_directions)*(0,)]*len(self.mat["C"])
+        for outlet_index in outlet_indices:
+            unified0D_derivs = 2*len(self.flow_directions)*[0,]
+            if np.sum(np.asarray(U)!=0) == 0:
+                dQ_in = 0
+                dQ_out = 0
+            else:
+                dQ_in = (Q[inlet_index]*rho)/self.area[inlet_index]**2 + (5*Q[outlet_index]**3*rho*np.exp((
+                    5*Q[outlet_index])/Q[inlet_index])*((self.area[outlet_index]*Q[inlet_index]*np.cos((
+                    3*self.direction_change[outlet_index])/4 + np.pi/4)*(eta_j[outlet_indices.index(outlet_index)] - 1))/(
+                    self.area[inlet_index]*Q[outlet_index]) + 1))/(self.area[outlet_index]**2*Q[inlet_index]**2) - (
+                    Q[outlet_index]*rho*np.cos((3*self.direction_change[outlet_index])/4 + np.pi/4)*(np.exp((
+                    5*Q[outlet_index])/Q[inlet_index]) - 1)*(eta_j[outlet_indices.index(outlet_index)] - 1))/(
+                    self.area[inlet_index]*self.area[outlet_index])
+                dQ_out = (Q[inlet_index]*rho*np.cos((3*self.direction_change[outlet_index])/4 + np.pi/4)*(np.exp((
+                    5*Q[outlet_index])/Q[inlet_index]) - 1)*(eta_j[outlet_indices.index(outlet_index)] - 1))/(
+                    self.area[inlet_index]*self.area[outlet_index]) - (2*Q[outlet_index]*rho*(np.exp((
+                    5*Q[outlet_index])/Q[inlet_index]) - 1)*((self.area[outlet_index]*Q[inlet_index]*np.cos((
+                    3*self.direction_change[outlet_index])/4 + np.pi/4)*(eta_j[outlet_indices.index(
+                    outlet_index)] - 1))/(self.area[inlet_index]*Q[outlet_index]) + 1))/self.area[outlet_index]**2 - (
+                    5*Q[outlet_index]**2*rho*np.exp((5*Q[outlet_index])/Q[inlet_index])*((
+                    self.area[outlet_index]*Q[inlet_index]*np.cos((3*self.direction_change[outlet_index])/4 + np.pi/4)*(
+                    eta_j[outlet_indices.index(outlet_index)] - 1))/(self.area[inlet_index]*Q[outlet_index]) + 1))/(
+                    self.area[outlet_index]**2*Q[inlet_index]) - (Q[outlet_index]*rho)/self.area[outlet_index]**2
+                unified0D_derivs[2*inlet_index+1] = dQ_in
+                unified0D_derivs[2*outlet_index+1] = dQ_out
+                unified0D_derivs_all[outlet_indices.index(outlet_index)]= tuple(unified0D_derivs)
+        self.mat["dC"] = unified0D_derivs_all
 
 class DNNJunction(Junction):
     def __init__(self, connecting_block_list=None, name="NoNameJunction", flow_directions=None,
@@ -377,12 +359,12 @@ class DNNJunction(Junction):
         self.num_inlets = 1
         self.num_outlets = len(flow_directions)-1
         self.angles = angles.insert(self.inlet_index, np.NaN)
-        areass = areas.insert(self.inlet_index, np.NaN)
+        self.areas = areas.insert(self.inlet_index, np.NaN)
         self.lengths = lengths.insert(self.inlet_index, np.NaN)
-        self.flow_time_der = [bb * 0 + 0.002 for bb in areass]
+        self.flow_time_der = [bb * 0 + 0.002 for bb in self.areas]
         # SET GEOMETREIC PARAMETERS
-        #areas = [0.5, 0.5, 0.5]
-        #self.angles = [0.9,0.9,0.9]
+        #self.area = [0.5, 0.5, 0.5]
+        #self.direction_change = [0.9,0.9,0.9]
         #self.junction_length = [11,11,11]
         #self.flow_time_der = [0.001, 0.001,0.004]
         self.flow_directions = flow_directions
@@ -407,13 +389,13 @@ class DNNJunction(Junction):
         DNN_input = len(self.flow_directions)*[np.NaN]
         for outlet_index in outlet_indices:
             DNN_input[outlet_index] = np.asarray([curr_y[wire_dict[self.connecting_wires_list[inlet_index]].LPN_solution_ids[0]]/1333.2, # inlet pressure
-                curr_y[wire_dict[self.connecting_wires_list[inlet_index]].LPN_solution_ids[1]]/areas[inlet_index], # inlet velocity
-                curr_y[wire_dict[self.connecting_wires_list[outlet_index]].LPN_solution_ids[1]]/areas[outlet_index], # outlet velocity,
+                curr_y[wire_dict[self.connecting_wires_list[inlet_index]].LPN_solution_ids[1]]/self.area[inlet_index], # inlet velocity
+                curr_y[wire_dict[self.connecting_wires_list[outlet_index]].LPN_solution_ids[1]]/self.area[outlet_index], # outlet velocity,
                 curr_y[wire_dict[self.connecting_wires_list[inlet_index]].LPN_solution_ids[1]], # inlet flow
                 curr_y[wire_dict[self.connecting_wires_list[outlet_index]].LPN_solution_ids[1]], # outlet flow
-                areas[inlet_index], #inlet area
-                areas[outlet_index], # outlet area
-                self.angles[outlet_index], # direction change
+                self.area[inlet_index], #inlet area
+                self.area[outlet_index], # outlet area
+                self.direction_change[outlet_index], # direction change
                 self.junction_length[outlet_index], # junction length
                 self.num_outlets, # number of outlets
                 self.flow_time_der[outlet_index]]) # flow time derivative
