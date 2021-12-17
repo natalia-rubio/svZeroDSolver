@@ -260,7 +260,7 @@ class UNIFIED0DJunction(Junction):
         U = np.asarray([-1*self.flow_directions[i] * np.divide(
             curr_y[wire_dict[self.connecting_wires_list[i]].LPN_solution_ids[1]],
             areas[i]) for i in range(len(self.flow_directions))]) # calculate velocity in each branch (inlets positive, outlets negative)
-
+        #pdb.set_trace()
         if np.sum(np.asarray(U)!=0) == 0: # if all velociies are 0, treat as normal junction (copy-pasted from normal junction code)
             self.mat['F'] = [(1.,) + (0,) * (2 * i + 1) + (-1,) + (0,) * (2 * self.num_connections - 2 * i - 3) for i in
                          range(self.num_connections - 1)]
@@ -271,7 +271,7 @@ class UNIFIED0DJunction(Junction):
             tmp += (self.flow_directions[-1],)
             self.mat['F'].append(tmp)
         else: # otherwise apply Unified0D model
-
+            #print("nonzero velocities")
             # IDENTIFY INLETS AND OUTLETS
             inlet_indices = list(np.asarray(np.nonzero(U>0)).astype(int)[0]) # identify inlets
             max_inlet = np.argmax(U) # index of the inlet with max velocity (serves as dominant inlet where necessary)
@@ -323,15 +323,14 @@ class UNIFIED0DJunction(Junction):
             # SET dC MATRIX
             Q = np.abs(np.divide(U,areas))
             unified0D_derivs_all = []
-            for i in range(1,num_branches+1):
+            for i in range(0,num_branches+1):
                 unified0D_derivs = 2*len(self.flow_directions)*[0,]
                 inlet_index = max_inlet
-#                if np.sum(np.asarray(U)!=0) == 0:
-#                    dQ_in = 0
-#                    dQ_out = 0
-#                else:
+                if i == max_inlet:
+                    continue
                 if i in outlet_indices:
                     outlet_index = i
+                    pdb.set_trace()
                     try:
                         dQ_in = (Q[inlet_index]*rho)/areas[inlet_index]**2 + (5*Q[outlet_index]**3*rho*np.exp((
                             5*Q[outlet_index])/Q[inlet_index])*((areas[outlet_index]*Q[inlet_index]*np.cos((
@@ -354,10 +353,12 @@ class UNIFIED0DJunction(Junction):
 
                     except:
                         print("error in finding analytical derivative")
-                    pdb.set_trace()
+                    #pdb.set_trace()
 
-                    unified0D_derivs[2*inlet_index+1] = -dQ_in
-                    unified0D_derivs[2*outlet_index+1] = dQ_out
+                    unified0D_derivs[2*inlet_index+1] = np.sign(U[inlet_index]) * np.sign(
+                        curr_y[wire_dict[self.connecting_wires_list[inlet_index]].LPN_solution_ids[1]]) * dQ_in
+                    unified0D_derivs[2*outlet_index+1] = np.sign(U[outlet_index]) * np.sign(
+                        curr_y[wire_dict[self.connecting_wires_list[outlet_index]].LPN_solution_ids[1]]) * dQ_out
                     if np.isnan(np.sum(unified0D_derivs))==True:
                         pdb.set_trace()
 
