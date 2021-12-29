@@ -11,7 +11,7 @@ area, and angle of the junction branches.
 
 Outputs: C, K --> numpy arrays of the C and K loss coefficients
 """
-import numpy as np
+import autograd.numpy as np
 import pdb
 def wrap_to_pi(angle):
     # function to map angles to a magnitude less than pi
@@ -43,7 +43,7 @@ def junction_loss_coeff(U, A, theta):
     #pdb.set_trace()
     # Angle Manipulations ------------------------------------------------
 
-    pseudo_outlet_angle = np.average(theta[outlets]) # initialize pseudo-outlet angle
+    pseudo_outlet_angle = np.mean(theta[outlets]) # initialize pseudo-outlet angle
 
     pseudo_inlet_angle = np.arctan2(
             np.sum(np.multiply(flow_rate[inlets], np.sin(theta[inlets]))),
@@ -53,7 +53,7 @@ def junction_loss_coeff(U, A, theta):
         pseudo_outlet_angle += np.pi # enforce that the pseudo-outlet angle be in the second quadrant
 
     theta = wrap_to_pi(theta - pseudo_outlet_angle) # set the average outlet angle to zero
-    if np.average(np.multiply(
+    if np.mean(np.multiply(
             flow_rate[inlets], np.sin(theta[inlets]))) < 0:
         theta = -theta # enforce that the majority of flow comes from positive angles
     pseudo_inlet_angle = np.arctan2(
