@@ -328,18 +328,17 @@ class UNIFIED0DJunction(Junction):
             self.set_no_flow_mats() # set F matrix and c vector for zero flow case
         else: # otherwise apply Unified0D model
             self.calc_F(U) # set F matrix
-            self.mat["C"] = self.calc_C(U, areas, copy.deepcopy(angles)) # set c vector
-
-            dC_dU = []
-            for C_index in range(len(self.mat["C"])):
-
-                def calc_C_entry(U):
-                    C_vec = self.calc_C(U, areas, copy.deepcopy(angles))
-                    C_entry = C_vec[C_index]
-                    return C_entry
-                dC_dU_entry = egrad(calc_C_entry)
-                dC_dU.append(dC_dU_entry)
             pdb.set_trace()
+            U_tensor = tf.convert_to_tensor(U)
+            with tf.GradientTape(watch_accessed_variables=False, persistent=False) as tape:
+              tape.watch(U_tensor)
+              #U_numpy = U_tensor.numpy()
+              #pdb.set_trace()
+              self.mat["C"] = self.calc_C(U_tensor, areas, copy.deepcopy(angles)) # set c vector
+              #pdb.set_trace()
+            dC_dU = tape.gradient(self.mat["C"], U_tensor)
+
+            #pdb.set_trace()
 #            # SET dC MATRIX
 #            Q = np.abs(np.divide(U,areas))
 #            unified0D_derivs_all = []
