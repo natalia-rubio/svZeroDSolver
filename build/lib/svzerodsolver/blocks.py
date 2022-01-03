@@ -34,7 +34,7 @@ import pdb
 import numpy as np
 from collections import defaultdict
 #from junction_loss_coeff import junction_loss_coeff
-from .junction_loss_coeff import junction_loss_coeff
+from .junction_loss_coeff_tf import junction_loss_coeff_tf
 import tensorflow as tf
 from tensorflow import keras
 import pickle
@@ -308,19 +308,32 @@ class UNIFIED0DJunction(Junction):
         rho = 1.06 # density of blood
         # CONFIGURE ANGLES FOR UNIFIED0D
         angles.insert(0,0) # add in the angle for the input file "presumed inlet" (first entry)
-        print(angles)
         angle_shift = np.pi - angles[max_inlet] # find shift to set first inlet angle to pi
         for i in range(num_branches): # loop over all angles
             angles[i] = angles[i] + angle_shift # shift all junction angles
         assert len(angles) == num_branches, 'One angle should be provided for each branch'
-        C, K, eta_j = junction_loss_coeff(U, np.asarray(areas), np.asarray(angles)) # run Unified0D junction loss coefficient function
-        assert np.size(C) == num_branches, "One coefficient should be returned per branch."
-        pressure_loss_unified0d = (rho*np.multiply(
-            C, np.square(U)) + 0.5*rho*np.subtract(
-            np.square(U[max_inlet]), np.square(U))) # compute pressure loss according to the unified 0d model
-        C_vec =  [-1*pressure_loss_unified0d[i] for i in range(num_branches)] + [0] # set C vector
+
+        U_tensor = tf.convert_to_tensor(U)
+        areas_tensor = tf.convert_to_tensor(areas)
+        angles_tensor = tf.convert_to_tensor(angles)
+
+        with tf.GradientTape(watch_accessed_variables=False, persistent=True) as tape:
+          tape.watch(U_tensor)
+          C, K, eta_j = junction_loss_coeff_tf(U_tensor, areas_tensor, angles_tensor) # run Unified0D junction loss coefficient function
+          assert tf.size(C) == num_branches, "One coefficient should be returned per branch."
+          pressure_loss_unified0d = (rho*tf.multiply(
+              C, tf.square(U)) + 0.5*rho*tf.subtract(
+              tf.square(U[max_inlet]), tf.square(U))) # compute pressure loss according to the unified 0d model
+        dC_dU = tape.gradient(pressure_loss_unified0d, U_tensor)
+        pdb.set_trace()
+
+        C_vec =  [-1*pressure_loss_unified0d[i].numpy() for i in range(num_branches)] + [0] # set C vector
         C_vec.pop(max_inlet) # remove dominant inlet entry
-        return C_vec
+
+        self.mat["C"] = C_vec # set c vector
+        #dC_dU = tape.gradient(self.mat["C"], U_tensor)
+        pdb.set_trace()
+
 
     def update_solution(self, args):
         curr_y, wire_dict, U, areas, angles = self.unpack_params(args)
@@ -328,15 +341,9 @@ class UNIFIED0DJunction(Junction):
             self.set_no_flow_mats() # set F matrix and c vector for zero flow case
         else: # otherwise apply Unified0D model
             self.calc_F(U) # set F matrix
+            self.calc_C(U, areas, copy.deepcopy(angles))
             pdb.set_trace()
-            U_tensor = tf.convert_to_tensor(U)
-            with tf.GradientTape(watch_accessed_variables=False, persistent=False) as tape:
-              tape.watch(U_tensor)
-              #U_numpy = U_tensor.numpy()
-              #pdb.set_trace()
-              self.mat["C"] = self.calc_C(U_tensor, areas, copy.deepcopy(angles)) # set c vector
-              #pdb.set_trace()
-            dC_dU = tape.gradient(self.mat["C"], U_tensor)
+
 
             #pdb.set_trace()
 #            # SET dC MATRIX
