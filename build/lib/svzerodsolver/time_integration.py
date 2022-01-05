@@ -79,6 +79,14 @@ class GenAlpha:
         for v in vecs:
             self.mat[v] = np.zeros(self.n)
 
+        # Natalia Addition
+#        x =
+#        xt = tf.convert_to_tensor(x.reshape((1,x.size)))
+#        with tf.GradientTape() as g:
+#            g.watch(xt)
+#            y = model(xt)
+#        grads = g.jacobian(y, xt).numpy().squeeze()
+
     def assemble_structures(self, block_list):
         """
         Assemble block matrices into global matrices
