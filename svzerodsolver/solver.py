@@ -73,7 +73,7 @@ import os
 import copy
 import numpy as np
 import scipy.interpolate
-
+import tensorflow as tf
 from . import blocks as ntwku
 from . import connections
 from . import time_integration as time_int
@@ -587,7 +587,7 @@ def run_network_util(zero_d_solver_input_file_path, parameters, draw_directed_gr
     args['rho'] = rho
     args['Wire dictionary'] = wire_dict
     args["check_jacobian"] = parameters["simulation_parameters"]["check_jacobian"]
-
+    args["gradient_tape"] = tf.GradientTape(watch_accessed_variables=False, persistent=False)
     # y_next, ydot_next = min_ydot_least_sq_init(neq, 1e-8, y_initial, block_list, args, parameters["simulation_parameters"]["delta_t"], rho)
 
     print("starting simulation")
