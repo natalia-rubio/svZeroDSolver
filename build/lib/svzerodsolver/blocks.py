@@ -248,6 +248,7 @@ class Junction(LPNBlock):
         self.mat['F'].append(tmp)
 
 class UNIFIED0DJunction(Junction):
+
     def __init__(self, junction_parameters, connecting_block_list=None, name="NoNameJunction", flow_directions=None):
         Junction.__init__(self, connecting_block_list, name=name, flow_directions=flow_directions)
         self.flow_directions = flow_directions
@@ -291,7 +292,7 @@ class UNIFIED0DJunction(Junction):
                          range(self.num_connections - 1)] # copy-pasted from normal junction
         self.F_add_continuity_row() # add mass conservation row
 
-    def calc_F(self, U):
+    def set_F(self, U):
         inlet_indices, max_inlet, num_inlets, outlet_indices, num_outlets, num_branches = self.classify_branches(U)
         self.mat['F'] = []
         for i in range(0,num_branches): # loop over branches- each branch (exept the "presumed inlet" is a row of F)
@@ -303,46 +304,67 @@ class UNIFIED0DJunction(Junction):
             self.mat['F'].append(tuple(F_row)) # append row to F matrix
         self.F_add_continuity_row() # add mass conservation row
 
-    def calc_C(self, U, areas, angles):
-        inlet_indices, max_inlet, num_inlets, outlet_indices, num_outlets, num_branches = self.classify_branches(U)
-        rho = 1.06 # density of blood
-        # CONFIGURE ANGLES FOR UNIFIED0D
+    def configure_angles(self, angles, max_inlet, num_branches):
         angles.insert(0,0) # add in the angle for the input file "presumed inlet" (first entry)
         angle_shift = np.pi - angles[max_inlet] # find shift to set first inlet angle to pi
         for i in range(num_branches): # loop over all angles
             angles[i] = angles[i] + angle_shift # shift all junction angles
         assert len(angles) == num_branches, 'One angle should be provided for each branch'
+        return angles
 
-        U_tensor = tf.convert_to_tensor(U)
-        areas_tensor = tf.convert_to_tensor(areas)
-        angles_tensor = tf.convert_to_tensor(angles)
+    def apply_unified0d(self, U, areas, angles):
+        inlet_indices, max_inlet, num_inlets, outlet_indices, num_outlets, num_branches = self.classify_branches(U)
+        rho = 1.06 # density of blood
+        angles = self.configure_angles(copy.deepcopy(angles), max_inlet, num_branches) # configure angles for unified0d
+        U_tensor = tf.Variable(tf.convert_to_tensor(U)) # convert U to a tensorflow variable
+        with tf.GradientTape(watch_accessed_variables=False, persistent=False) as tape:
+          tape.watch(U_tensor) # track operations applied to U_tensor
+          C_outlets, outlets = junction_loss_coeff_tf(U_tensor, np.asarray(areas), angles) # run Unified0D junction loss coefficient function
+          assert tf.size(C_outlets) == num_outlets, "One coefficient should be returned per outlet."
+          dP_unified0d_outlets = (rho*tf.multiply(
+              C_outlets, tf.square(U_tensor[outlet_indices])) + 0.5*rho*tf.subtract(
+              tf.square(U_tensor[max_inlet]), tf.square(U_tensor[outlet_indices]))) # compute pressure loss according to the unified 0d model (inlet - outlet)
+        ddP_dU_outlets = tape.jacobian(dP_unified0d_outlets, U_tensor) # get derivatives of pressure loss coeff wrt. U_tensor
+        assert U[outlets] == U[outlet_indices]
+        #pdb.set_trace()
+        return dP_unified0d_outlets.numpy(), ddP_dU_outlets.numpy(), outlets
 
-        with tf.GradientTape(watch_accessed_variables=False, persistent=True) as tape:
-          tape.watch(U_tensor)
-          C, K, eta_j = junction_loss_coeff_tf(U_tensor, areas_tensor, angles_tensor) # run Unified0D junction loss coefficient function
-          assert tf.size(C) == num_branches, "One coefficient should be returned per branch."
-          pressure_loss_unified0d = (rho*tf.multiply(
-              C, tf.square(U)) + 0.5*rho*tf.subtract(
-              tf.square(U[max_inlet]), tf.square(U))) # compute pressure loss according to the unified 0d model
-        dC_dU = tape.gradient(pressure_loss_unified0d, U_tensor)
-        pdb.set_trace()
 
-        C_vec =  [-1*pressure_loss_unified0d[i].numpy() for i in range(num_branches)] + [0] # set C vector
+    def set_C(self, dP_unified0d_outlets, U):
+        inlet_indices, max_inlet, num_inlets, outlet_indices, num_outlets, num_branches = self.classify_branches(U)
+        C_vec = [0] * num_branches
+        for i in range(num_branches):
+          if i in outlet_indices:
+            C_vec[i] =  -1*dP_unified0d_outlets[outlet_indices.index(i)]
         C_vec.pop(max_inlet) # remove dominant inlet entry
-
+        C_vec = C_vec + [0]
         self.mat["C"] = C_vec # set c vector
-        #dC_dU = tape.gradient(self.mat["C"], U_tensor)
-        pdb.set_trace()
 
+    def set_dC(self, ddP_dU_outlets, U):
+        inlet_indices, max_inlet, num_inlets, outlet_indices, num_outlets, num_branches = self.classify_branches(U)
+        dC = []
+        for i in range(num_branches+1):
+            dP_derivs = [0] * (2*num_branches)
+            if i == max_inlet:
+                continue
+            elif i in outlet_indices: # loop over pressure losses (rows of C)
+                ddP_dU_vec = ddP_dU_outlets[outlet_indices.index(i),:]
+                for j in range(num_branches): # loop over velocity derivatives
+                    dP_derivs[2*j + 1] = -1*ddP_dU_vec[j]
+            dC.append(tuple(dP_derivs))
+        self.mat["dC"] = dC # set c vector
 
     def update_solution(self, args):
         curr_y, wire_dict, U, areas, angles = self.unpack_params(args)
         if np.sum(np.asarray(U)!=0) == 0: # if all velocities are 0, treat as normal junction (copy-pasted from normal junction code)
             self.set_no_flow_mats() # set F matrix and c vector for zero flow case
+            print("all zeros")
         else: # otherwise apply Unified0D model
-            self.calc_F(U) # set F matrix
-            self.calc_C(U, areas, copy.deepcopy(angles))
-            pdb.set_trace()
+            self.set_F(U) # set F matrix
+            dP_outlets, ddP_dU_outlets, outlets = self.apply_unified0d(U, areas, copy.deepcopy(angles)) # apply unified0d
+            self.set_C(dP_outlets, U) # set C vector
+            self.set_dC(ddP_dU_outlets, U) # set dC matrix
+            #pdb.set_trace()
 
 
             #pdb.set_trace()
