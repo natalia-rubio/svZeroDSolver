@@ -237,11 +237,11 @@ class GenAlpha:
 
             args['Solution'] = yaf
             iit += 1
-            print(iit, " Newton iterations.  Current residual: " , self.res)
+            #print(iit, " Newton iterations.  Current residual: " , self.res)
             #pdb.set_trace()
         if iit >= nit:
             print("Max NR iterations (" ,iit,") reached at time: ", t, " , max error: ", max(abs(self.res)))
-
+        print("timestep ", t, " completed.  ", iit, " Newton iterations.")
         # update time step
         curr_y = y + (yaf - y) / self.alpha_f
         curr_ydot = ydot + (ydotam - ydot) / self.alpha_m

@@ -39,12 +39,13 @@ import tensorflow as tf
 from tensorflow import keras
 import pickle
 DNN_model = keras.models.load_model('../svzerodsolver/DNN_model_oct')
-from sklearn.preprocessing import StandardScaler
+#from sklearn.preprocessing import StandardScaler
 z_scaler_in = pickle.load(open('../svzerodsolver/z_scaling/scale_z_in/z_scaler_in.pkl', 'rb')) # scaler between normalized and physical domain
 z_scaler_out = pickle.load(open('../svzerodsolver/z_scaling/scale_z_out/z_scaler_out.pkl', 'rb')) # scaler between normalized and physical domain
-import autograd.numpy as np  # Thinly-wrapped numpy
-from autograd import grad    # The only autograd function you may ever need
-from autograd import elementwise_grad as egrad
+#import autograd.numpy as np  # Thinly-wrapped numpy
+#from autograd import grad    # The only autograd function you may ever need
+#from autograd import elementwise_grad as egrad
+import time
 class LPNVariable:
     def __init__(self, value, units, name="NoName", vtype='ArbitraryVariable'):
         self.type = vtype
@@ -312,20 +313,37 @@ class UNIFIED0DJunction(Junction):
         assert len(angles) == num_branches, 'One angle should be provided for each branch'
         return angles
 
-    def apply_unified0d(self, U, areas, angles):
-        inlet_indices, max_inlet, num_inlets, outlet_indices, num_outlets, num_branches = self.classify_branches(U)
+    @tf.function
+    def unified0d_tf(self, U_tensor, areas_tensor, angles_tensor, num_outlets, outlet_indices, max_inlet):
         rho = 1.06 # density of blood
-        angles = self.configure_angles(copy.deepcopy(angles), max_inlet, num_branches) # configure angles for unified0d
-        U_tensor = tf.Variable(tf.convert_to_tensor(U)) # convert U to a tensorflow variable
         with tf.GradientTape(watch_accessed_variables=False, persistent=False) as tape:
+          #create_tape_time = time.time()
           tape.watch(U_tensor) # track operations applied to U_tensor
-          C_outlets, outlets = junction_loss_coeff_tf(U_tensor, np.asarray(areas), angles) # run Unified0D junction loss coefficient function
-          assert tf.size(C_outlets) == num_outlets, "One coefficient should be returned per outlet."
+          C_outlets, outlets = junction_loss_coeff_tf(U_tensor, areas_tensor, angles_tensor) # run Unified0D junction loss coefficient function
+
           dP_unified0d_outlets = (rho*tf.multiply(
               C_outlets, tf.square(U_tensor[outlet_indices])) + 0.5*rho*tf.subtract(
               tf.square(U_tensor[max_inlet]), tf.square(U_tensor[outlet_indices]))) # compute pressure loss according to the unified 0d model (inlet - outlet)
+          #finish_ops_time = time.time()
+        #pdb.set_trace()
         ddP_dU_outlets = tape.jacobian(dP_unified0d_outlets, U_tensor) # get derivatives of pressure loss coeff wrt. U_tensor
-        assert U[outlets] == U[outlet_indices]
+
+        return dP_unified0d_outlets, ddP_dU_outlets, outlets
+
+    def apply_unified0d(self, U, areas, angles):
+        inlet_indices, max_inlet, num_inlets, outlet_indices, num_outlets, num_branches = self.classify_branches(U)
+        angles = self.configure_angles(copy.deepcopy(angles), max_inlet, num_branches) # configure angles for unified0d
+        U_tensor = tf.Variable(tf.convert_to_tensor(U)) # convert U to a tensor
+        areas_tensor = tf.convert_to_tensor(areas, dtype="double") # convert U to a tensor
+        angles_tensor = tf.convert_to_tensor(angles, dtype="double") # convert U to a tensor
+        #start_time = time.time()
+        dP_unified0d_outlets, ddP_dU_outlets, outlets = self.unified0d_tf(U_tensor, areas_tensor, angles_tensor, num_outlets, outlet_indices, max_inlet)
+        assert tf.size(dP_unified0d_outlets) == num_outlets, "One coefficient should be returned per outlet."
+        #calc_jacobian_time = time.time()
+        assert U[outlets.numpy()] == U[outlet_indices]
+#        print("time to create tape: ", create_tape_time - start_time)
+#        print("time to complete operations: ", finish_ops_time - create_tape_time)
+#        print("time to calculate jacobian: ", calc_jacobian_time - finish_ops_time)
         #pdb.set_trace()
         return dP_unified0d_outlets.numpy(), ddP_dU_outlets.numpy(), outlets
 
