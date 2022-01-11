@@ -36,12 +36,12 @@ from collections import defaultdict
 #from junction_loss_coeff import junction_loss_coeff
 from .junction_loss_coeff_tf import junction_loss_coeff_tf
 import tensorflow as tf
-from tensorflow import keras
-import pickle
-DNN_model = keras.models.load_model('../svzerodsolver/DNN_model_oct')
+#from tensorflow import keras
+#import pickle
+#DNN_model = keras.models.load_model('../svzerodsolver/DNN_model_oct')
 #from sklearn.preprocessing import StandardScaler
-z_scaler_in = pickle.load(open('../svzerodsolver/z_scaling/scale_z_in/z_scaler_in.pkl', 'rb')) # scaler between normalized and physical domain
-z_scaler_out = pickle.load(open('../svzerodsolver/z_scaling/scale_z_out/z_scaler_out.pkl', 'rb')) # scaler between normalized and physical domain
+#z_scaler_in = pickle.load(open('../svzerodsolver/z_scaling/scale_z_in/z_scaler_in.pkl', 'rb')) # scaler between normalized and physical domain
+#z_scaler_out = pickle.load(open('../svzerodsolver/z_scaling/scale_z_out/z_scaler_out.pkl', 'rb')) # scaler between normalized and physical domain
 #import autograd.numpy as np  # Thinly-wrapped numpy
 #from autograd import grad    # The only autograd function you may ever need
 #from autograd import elementwise_grad as egrad
@@ -320,33 +320,36 @@ class UNIFIED0DJunction(Junction):
           #create_tape_time = time.time()
           tape.watch(U_tensor) # track operations applied to U_tensor
           C_outlets, outlets = junction_loss_coeff_tf(U_tensor, areas_tensor, angles_tensor) # run Unified0D junction loss coefficient function
-
           dP_unified0d_outlets = (rho*tf.multiply(
-              C_outlets, tf.square(U_tensor[outlet_indices])) + 0.5*rho*tf.subtract(
-              tf.square(U_tensor[max_inlet]), tf.square(U_tensor[outlet_indices]))) # compute pressure loss according to the unified 0d model (inlet - outlet)
-          #finish_ops_time = time.time()
-        #pdb.set_trace()
+              C_outlets, tf.square(tf.boolean_mask(U_tensor, outlets))) + 0.5*rho*tf.subtract(
+              tf.square(tf.slice(U_tensor, begin = [max_inlet], size = [1])), tf.square(tf.boolean_mask(U_tensor, outlets)))) # compute pressure loss according to the unified 0d model
         ddP_dU_outlets = tape.jacobian(dP_unified0d_outlets, U_tensor) # get derivatives of pressure loss coeff wrt. U_tensor
-
         return dP_unified0d_outlets, ddP_dU_outlets, outlets
 
-    def apply_unified0d(self, U, areas, angles):
+    def apply_unified0d(self, args, U, areas, angles):
         inlet_indices, max_inlet, num_inlets, outlet_indices, num_outlets, num_branches = self.classify_branches(U)
         angles = self.configure_angles(copy.deepcopy(angles), max_inlet, num_branches) # configure angles for unified0d
         U_tensor = tf.Variable(tf.convert_to_tensor(U)) # convert U to a tensor
         areas_tensor = tf.convert_to_tensor(areas, dtype="double") # convert U to a tensor
         angles_tensor = tf.convert_to_tensor(angles, dtype="double") # convert U to a tensor
-        #start_time = time.time()
-        dP_unified0d_outlets, ddP_dU_outlets, outlets = self.unified0d_tf(U_tensor, areas_tensor, angles_tensor, num_outlets, outlet_indices, max_inlet)
+        outlet_indices_tensor = tf.convert_to_tensor(outlet_indices, dtype="double") # convert U to a tensor
+        max_inlet_int = tf.constant(max_inlet, dtype="int32") # convert U to a tensor
+        num_outlets_int = tf.constant(num_outlets, dtype="int32") # convert U to a tensor
+        start_time = time.time()
+        branch_config = tuple(inlet_indices + outlet_indices)
+        if branch_config in args["tf_graph_dict"]:
+          unified_tf_concrete = args["tf_graph_dict"][branch_config]
+        else:
+          unified_tf_concrete = self.unified0d_tf.get_concrete_function(U_tensor, areas_tensor, angles_tensor, num_outlets_int, outlet_indices_tensor, max_inlet_int)
+          args["tf_graph_dict"].update({branch_config: unified_tf_concrete})
+          print("adding tf.concrete_function for ", branch_config)
+        dP_unified0d_outlets, ddP_dU_outlets, outlets = unified_tf_concrete(U_tensor, areas_tensor, angles_tensor, num_outlets_int, outlet_indices_tensor, max_inlet_int)
+        end_time = time.time()
+        #print(U)
+        if end_time - start_time > 0.01: print("time to apply unified0d: ", end_time - start_time)
         assert tf.size(dP_unified0d_outlets) == num_outlets, "One coefficient should be returned per outlet."
-        #calc_jacobian_time = time.time()
-        assert U[outlets.numpy()] == U[outlet_indices]
-#        print("time to create tape: ", create_tape_time - start_time)
-#        print("time to complete operations: ", finish_ops_time - create_tape_time)
-#        print("time to calculate jacobian: ", calc_jacobian_time - finish_ops_time)
-        #pdb.set_trace()
+        assert np.array_equal(U[outlets.numpy()], U[outlet_indices])
         return dP_unified0d_outlets.numpy(), ddP_dU_outlets.numpy(), outlets
-
 
     def set_C(self, dP_unified0d_outlets, U):
         inlet_indices, max_inlet, num_inlets, outlet_indices, num_outlets, num_branches = self.classify_branches(U)
@@ -376,60 +379,12 @@ class UNIFIED0DJunction(Junction):
         curr_y, wire_dict, U, areas, angles = self.unpack_params(args)
         if np.sum(np.asarray(U)!=0) == 0: # if all velocities are 0, treat as normal junction (copy-pasted from normal junction code)
             self.set_no_flow_mats() # set F matrix and c vector for zero flow case
-            print("all zeros")
+            #print("all zeros")
         else: # otherwise apply Unified0D model
             self.set_F(U) # set F matrix
-            dP_outlets, ddP_dU_outlets, outlets = self.apply_unified0d(U, areas, copy.deepcopy(angles)) # apply unified0d
+            dP_outlets, ddP_dU_outlets, outlets = self.apply_unified0d(args, U, areas, copy.deepcopy(angles)) # apply unified0d
             self.set_C(dP_outlets, U) # set C vector
             self.set_dC(ddP_dU_outlets, U) # set dC matrix
-            #pdb.set_trace()
-
-
-            #pdb.set_trace()
-#            # SET dC MATRIX
-#            Q = np.abs(np.divide(U,areas))
-#            unified0D_derivs_all = []
-#            for i in range(0,num_branches+1):
-#                unified0D_derivs = 2*len(self.flow_directions)*[0,]
-#                inlet_index = max_inlet
-#                if i == max_inlet:
-#                    continue
-#                if i in outlet_indices:
-#                    outlet_index = i
-#                    pdb.set_trace()
-#                    try:
-#                        dQ_in = (Q[inlet_index]*rho)/areas[inlet_index]**2 + (5*Q[outlet_index]**3*rho*np.exp((
-#                            5*Q[outlet_index])/Q[inlet_index])*((areas[outlet_index]*Q[inlet_index]*np.cos((
-#                            3*angles[outlet_index])/4 + np.pi/4)*(eta_j[outlet_indices.index(outlet_index)] - 1))/(
-#                            areas[inlet_index]*Q[outlet_index]) + 1))/(areas[outlet_index]**2*Q[inlet_index]**2) - (
-#                            Q[outlet_index]*rho*np.cos((3*angles[outlet_index])/4 + np.pi/4)*(np.exp((
-#                            5*Q[outlet_index])/Q[inlet_index]) - 1)*(eta_j[outlet_indices.index(outlet_index)] - 1))/(
-#                            areas[inlet_index]*areas[outlet_index])
-#
-#                        dQ_out = (Q[inlet_index]*rho*np.cos((3*angles[outlet_index])/4 + np.pi/4)*(np.exp((
-#                            5*Q[outlet_index])/Q[inlet_index]) - 1)*(eta_j[outlet_indices.index(outlet_index)] - 1))/(
-#                            areas[inlet_index]*areas[outlet_index]) - (2*Q[outlet_index]*rho*(np.exp((
-#                            5*Q[outlet_index])/Q[inlet_index]) - 1)*((areas[outlet_index]*Q[inlet_index]*np.cos((
-#                            3*angles[outlet_index])/4 + np.pi/4)*(eta_j[outlet_indices.index(
-#                            outlet_index)] - 1))/(areas[inlet_index]*Q[outlet_index]) + 1))/areas[outlet_index]**2 - (
-#                            5*Q[outlet_index]**2*rho*np.exp((5*Q[outlet_index])/Q[inlet_index])*((
-#                            areas[outlet_index]*Q[inlet_index]*np.cos((3*angles[outlet_index])/4 + np.pi/4)*(
-#                            eta_j[outlet_indices.index(outlet_index)] - 1))/(areas[inlet_index]*Q[outlet_index]) + 1))/(
-#                            areas[outlet_index]**2*Q[inlet_index]) - (Q[outlet_index]*rho)/areas[outlet_index]**2
-#
-#                    except:
-#                        print("error in finding analytical derivative")
-#                    #pdb.set_trace()
-#
-#                    unified0D_derivs[2*inlet_index+1] = np.sign(U[inlet_index]) * np.sign(
-#                        curr_y[wire_dict[self.connecting_wires_list[inlet_index]].LPN_solution_ids[1]]) * dQ_in
-#                    unified0D_derivs[2*outlet_index+1] = np.sign(U[outlet_index]) * np.sign(
-#                        curr_y[wire_dict[self.connecting_wires_list[outlet_index]].LPN_solution_ids[1]]) * dQ_out
-#                    if np.isnan(np.sum(unified0D_derivs))==True:
-#                        pdb.set_trace()
-#
-#                unified0D_derivs_all.append(tuple(unified0D_derivs))
-#            self.mat["dC"] = unified0D_derivs_all
             #pdb.set_trace()
 
 class DNNJunction(Junction):

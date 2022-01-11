@@ -11,10 +11,10 @@ area, and angle of the junction branches.
 
 Outputs: C, K --> numpy arrays of the C and K loss coefficients
 """
-import numpy as np
+
 import tensorflow as tf
 import tensorflow.math as tfm
-import pdb
+
 
 pi = tf.constant(3.14159, dtype = tf.float64)
 def wrap_to_pi(angle):
@@ -25,12 +25,6 @@ def wrap_to_pi(angle):
     body = lambda angle: tf.cond(tfm.greater(angle, pi), fn_true, fn_false)
     tf.while_loop(cond, body, [angle])
     return angle
-#    while abs(angle) > pi:
-#        if angle > 0:
-#            angle = angle - 2*pi
-#        else:
-#            angle = angle + 2*pi
-#    return angle
 
 def wrap_to_2pi(angle):
     # function to map angles to a magnitude less than pi
@@ -41,20 +35,12 @@ def wrap_to_2pi(angle):
     tf.while_loop(cond, body, [angle])
     return angle
 
-#def wrap_to_2pi(angle):
-#    # function to map angles to a magnitude less than 2pi
-#    while abs(angle) > 2*pi:
-#        if angle > 0:
-#            angle = angle - 4*pi
-#        else:
-#            angle = angle + 4*pi
-#    return angle
-
 def junction_loss_coeff_tf(U, A, theta):
     theta = tf.map_fn(wrap_to_pi, theta)
     flow_rate = tfm.multiply(U, A) # flow rate
-    inlets = flow_rate >= 0 # identify inlets
-    outlets = flow_rate < 0 # identify outlets
+    inlets = tf.greater_equal(flow_rate, tf.constant([0], dtype= "float64")) # identify inlets
+    outlets = tf.less(flow_rate, tf.constant([0], dtype= "float64")) # identify outlets
+
     # Angle Manipulations ------------------------------------------------
 
     pseudo_outlet_angle = tfm.reduce_mean(tf.boolean_mask(theta,outlets)) # initialize pseudo-outlet angle

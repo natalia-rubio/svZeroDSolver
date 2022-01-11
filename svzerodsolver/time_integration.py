@@ -179,6 +179,7 @@ class GenAlpha:
             ax.set_aspect('equal', 'box')
 
         fig.suptitle('absolute error vs epsilon')
+        plt.savefig("check_jacobian_plot.png")
         plt.show()
 
     def step(self, y, ydot, t, block_list, args, dt, nit=1e5):
@@ -213,12 +214,7 @@ class GenAlpha:
             self.assemble_structures(block_list)
             self.form_rhs_NR(yaf, ydotam)
             self.form_matrix_NR(dt)
-            try:
-                J_numerical = self.form_matrix_NR_numerical(copy.deepcopy(self.res), ydotam, args, block_list, epsilon=0.001)
-                #pdb.set_trace()
-            except:
-                pass
-                #pdb.set_trace()
+
             # perform finite-difference check of jacobian if requested
             if args['check_jacobian']:
                 if args['Time'] > dt:

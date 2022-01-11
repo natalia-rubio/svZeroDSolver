@@ -587,6 +587,7 @@ def run_network_util(zero_d_solver_input_file_path, parameters, draw_directed_gr
     args['rho'] = rho
     args['Wire dictionary'] = wire_dict
     args["check_jacobian"] = parameters["simulation_parameters"]["check_jacobian"]
+    args["tf_graph_dict"] = {}
 
     # y_next, ydot_next = min_ydot_least_sq_init(neq, 1e-8, y_initial, block_list, args, parameters["simulation_parameters"]["delta_t"], rho)
 
