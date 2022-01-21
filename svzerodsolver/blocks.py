@@ -36,16 +36,8 @@ from collections import defaultdict
 #from junction_loss_coeff import junction_loss_coeff
 from .junction_loss_coeff_tf import junction_loss_coeff_tf
 import tensorflow as tf
-#from tensorflow import keras
-#import pickle
-#DNN_model = keras.models.load_model('../svzerodsolver/DNN_model_oct')
-#from sklearn.preprocessing import StandardScaler
-#z_scaler_in = pickle.load(open('../svzerodsolver/z_scaling/scale_z_in/z_scaler_in.pkl', 'rb')) # scaler between normalized and physical domain
-#z_scaler_out = pickle.load(open('../svzerodsolver/z_scaling/scale_z_out/z_scaler_out.pkl', 'rb')) # scaler between normalized and physical domain
-#import autograd.numpy as np  # Thinly-wrapped numpy
-#from autograd import grad    # The only autograd function you may ever need
-#from autograd import elementwise_grad as egrad
 import time
+
 class LPNVariable:
     def __init__(self, value, units, name="NoName", vtype='ArbitraryVariable'):
         self.type = vtype
@@ -217,6 +209,29 @@ class LPNBlock:
             vnum = local_eq - nwirevars
             return self.LPN_solution_ids[vnum]
 
+    def form_derivative_num(self, args, epsilon):
+      print("form deriv running")
+      self.update_solution(args)
+      C_original = self.mat["C"]
+      dC_analytical = np.asarray(self.mat["dC"])
+      preturbation_size = np.zeros(len(args["Solution"]))
+      preturbed_args = copy.deepcopy(args)
+      dC_numerical = []
+      pdb.set_trace()
+      for i in range(len(args["Solution"])):
+         preturbation_size[i] = max(np.abs(args["Solution"][i])  * epsilon, epsilon)
+         preturbed_args['Solution'] = args["Solution"]  + preturbation_size
+         self.update_solution(preturbed_args)
+         C_preturbed = self.mat["C"]
+         dC_numerical.append(C_preturbed)
+      pdb.set_trace()
+
+
+    def check_jacobian(self, args):
+        self.update_solution(args)
+        C_original = self.mat["C"]
+        dC_analytical = np.asarray(self.mat["dC"])
+        self.form_derivative_num(args, epsilon)
 
 class Junction(LPNBlock):
     """
@@ -344,6 +359,7 @@ class UNIFIED0DJunction(Junction):
           args["tf_graph_dict"].update({branch_config: unified_tf_concrete})
           print("adding tf.concrete_function for ", branch_config)
         dP_unified0d_outlets, ddP_dU_outlets, outlets = unified_tf_concrete(U_tensor, areas_tensor, angles_tensor, num_outlets_int, outlet_indices_tensor, max_inlet_int)
+
         end_time = time.time()
         #print(U)
         if end_time - start_time > 0.01: print("time to apply unified0d: ", end_time - start_time)
@@ -358,7 +374,7 @@ class UNIFIED0DJunction(Junction):
           if i in outlet_indices:
             C_vec[i] =  -1*dP_unified0d_outlets[outlet_indices.index(i)]
         C_vec.pop(max_inlet) # remove dominant inlet entry
-        C_vec = C_vec + [0]
+        C_vec = C_vec + [0] # mass conservation
         self.mat["C"] = C_vec # set c vector
 
     def set_dC(self, ddP_dU_outlets, U):
@@ -387,79 +403,151 @@ class UNIFIED0DJunction(Junction):
             self.set_dC(ddP_dU_outlets, U) # set dC matrix
             #pdb.set_trace()
 
+
 class DNNJunction(Junction):
-    def __init__(self, connecting_block_list=None, name="NoNameJunction", flow_directions=None,
-                 angles = None, areas = None, lengths = None):
-        Junction.__init__(self, connecting_block_list, name=name, flow_directions=flow_directions,angles = angles, areas = areas, lengths = lengths)
 
-        if np.sum(np.asarray(self.flow_directions)<0) != 1 :
-            raise ValueError("Junction must have exactly one inlet.")
-        self.inlet_index = np.asarray(np.nonzero(np.asarray(flow_directions)<0)).astype(int)[0][0]
-        self.outlet_indices = list(np.nonzero(np.asarray(self.flow_directions)>=0)[0])
-        self.num_inlets = 1
-        self.num_outlets = len(flow_directions)-1
-        self.angles = angles.insert(self.inlet_index, np.NaN)
-        areass = areas.insert(self.inlet_index, np.NaN)
-        self.lengths = lengths.insert(self.inlet_index, np.NaN)
-        self.flow_time_der = [bb * 0 + 0.002 for bb in areass]
-        # SET GEOMETREIC PARAMETERS
-        #areas = [0.5, 0.5, 0.5]
-        #self.angles = [0.9,0.9,0.9]
-        #self.junction_length = [11,11,11]
-        #self.flow_time_der = [0.001, 0.001,0.004]
+    def __init__(self, junction_parameters, connecting_block_list=None, name="NoNameJunction", flow_directions=None):
+        Junction.__init__(self, connecting_block_list, name=name, flow_directions=flow_directions)
         self.flow_directions = flow_directions
+        self.junction_parameters = junction_parameters
 
-    def update_solution(self,args):
-        inlet_index = self.inlet_index
-        outlet_indices = self.outlet_indices
+    def unpack_params(self, args):
+        self.model = args["dnn_model"]["model"]
+        self.mu_in = tf.constant(args["dnn_model"]["scalings"]["input_mean"], dtype= "float64")
+        self.sd_in = tf.constant(args["dnn_model"]["scalings"]["input_sd"], dtype= "float64")
+        self.mu_out = tf.constant(args["dnn_model"]["scalings"]["output_mean"], dtype= "float64")
+        self.sd_out = tf.constant(args["dnn_model"]["scalings"]["output_sd"], dtype= "float64")
         curr_y = args['Solution']  # the current solution for all unknowns in our 0D model
-        wire_dict = args['Wire dictionary']
+        wire_dict = args['Wire dictionary'] # connectivity dictionary
+        areas = self.junction_parameters["areas"] # load areas
+        U = np.asarray([-1*self.flow_directions[i] * np.divide(
+            curr_y[wire_dict[self.connecting_wires_list[i]].LPN_solution_ids[1]],
+            areas[i]) for i in range(len(self.flow_directions))]) # calculate velocity in each branch (inlets positive, outlets negative)
+        angles = copy.deepcopy(self.junction_parameters["angles"]) # load angles
+        angles.insert(0,0) # add in the angle for the input file "presumed inlet" (first entry)
+        return curr_y, wire_dict, U, areas, angles
 
-        # SET F MATRIX
-        self.mat['F'] = [(1.,) + (0,) * (2 * i + 1) + (-1,) + (0,) * (2 * self.num_connections - 2 * i - 3) for i in
-                 range(self.num_connections - 1)] # pressure drop over junctions rows
+    def F_add_continuity_row(self):
         tmp = (0,)
         for d in self.flow_directions[:-1]:
             tmp += (d,)
             tmp += (0,)
-        tmp += (self.flow_directions[-1],) # mass conservation
+        tmp += (self.flow_directions[-1],)
         self.mat['F'].append(tmp)
 
-        # SET C VECTOR
-        DNN_input = len(self.flow_directions)*[np.NaN]
-        for outlet_index in outlet_indices:
-            DNN_input[outlet_index] = np.asarray([curr_y[wire_dict[self.connecting_wires_list[inlet_index]].LPN_solution_ids[0]]/1333.2, # inlet pressure
-                curr_y[wire_dict[self.connecting_wires_list[inlet_index]].LPN_solution_ids[1]]/areas[inlet_index], # inlet velocity
-                curr_y[wire_dict[self.connecting_wires_list[outlet_index]].LPN_solution_ids[1]]/areas[outlet_index], # outlet velocity,
-                curr_y[wire_dict[self.connecting_wires_list[inlet_index]].LPN_solution_ids[1]], # inlet flow
-                curr_y[wire_dict[self.connecting_wires_list[outlet_index]].LPN_solution_ids[1]], # outlet flow
-                areas[inlet_index], #inlet area
-                areas[outlet_index], # outlet area
-                self.angles[outlet_index], # direction change
-                self.junction_length[outlet_index], # junction length
-                self.num_outlets, # number of outlets
-                self.flow_time_der[outlet_index]]) # flow time derivative
-        self.mat["C"]  =  [-1333.2*z_scaler_out.inverse_transform(DNN_model.predict(
-            z_scaler_in.fit_transform(np.reshape(
-            DNN_input[outlet_index], (1,11))))) for outlet_index in outlet_indices] + [0]
+    def classify_branches(self, U):
+        inlet_indices = list(np.asarray(np.nonzero(U>0)).astype(int)[0]) # identify inlets
+        max_inlet = np.argmax(U) # index of the inlet with max velocity (serves as dominant inlet where necessary)
+        num_inlets = len(inlet_indices) # number of inlets
+        outlet_indices = list(np.nonzero(U<=0)[0]) # identify outlets
+        num_outlets = len(outlet_indices) # number of outlets
+        num_branches = U.size # number of branches
+        # inlet/outlet sanity checks
+        if num_inlets ==0:
+          pdb.set_trace()
+        assert num_inlets != 0, "No junction inlet."
+        assert num_outlets !=0, "No junction outlet."
+        assert num_inlets + num_outlets == num_branches, "Sum of inlets and outlets does not equal the number of branches."
+        return inlet_indices, max_inlet, num_inlets, outlet_indices, num_outlets, num_branches
 
-        # SET dC MATRIX
-        DNN_derivs_all = [2*len(self.flow_directions)*(0,)]*len(self.mat["C"])
+    def set_no_flow_mats(self):
+        self.mat['F'] = [(1.,) + (0,) * (2 * i + 1) + (-1,) + (0,) * (2 * self.num_connections - 2 * i - 3) for i in
+                         range(self.num_connections - 1)] # copy-pasted from normal junction
+        self.F_add_continuity_row() # add mass conservation row
+
+    def set_F(self, U):
+        inlet_indices, max_inlet, num_inlets, outlet_indices, num_outlets, num_branches = self.classify_branches(U)
+        self.mat['F'] = []
+        for i in range(0,num_branches): # loop over branches- each branch (exept the "presumed inlet" is a row of F)
+            if i == max_inlet:
+              continue # if the branch is the dominant inlet branch do not add a new column
+            F_row = [0]*(2*num_branches) # row of 0s with 1 in column corresponding to "presumed inlet" branch pressure
+            F_row[2*max_inlet] = 1 # place 1 in column corresponding to dominant inlet pressure
+            F_row[2*i] = -1 # place -1 in column corresponding to each branch pressure
+            self.mat['F'].append(tuple(F_row)) # append row to F matrix
+        self.F_add_continuity_row() # add mass conservation row
+
+    @tf.function
+    def dnn_tf(self, dnn_input_tensor):
+        with tf.GradientTape(watch_accessed_variables=False, persistent=False) as tape:
+          tape.watch(dnn_input_tensor) # track operations applied to DNN_input_tensor
+          dnn_input_tensor_norm = (dnn_input_tensor-self.mu_in)/self.sd_in
+          dnn_output_norm = tf.cast(self.model(dnn_input_tensor_norm), dtype = "float64")
+          dP_dnn_outlet = (dnn_output_norm * self.sd_out) + self.mu_out
+        ddP_dU_outlet = tape.jacobian(dP_dnn_outlet, dnn_input_tensor) # get derivatives of pressure loss coeff wrt. U_tensor
+        return dP_dnn_outlet, ddP_dU_outlet
+
+    def apply_dnn(self, args, U, areas, angles, curr_y, wire_dict):
+        inlet_indices, max_inlet, num_inlets, outlet_indices, num_outlets, num_branches = self.classify_branches(U)
+        start_time = time.time()
+        dP_dnn_outlets = []
+        ddP_dU_outlets = []
         for outlet_index in outlet_indices:
-            DNN_derivs = 2*len(self.flow_directions)*[0,]
-            xt = tf.convert_to_tensor(DNN_input[outlet_index].reshape((1,DNN_input[outlet_index].size)))
-            with tf.GradientTape() as g:
-                g.watch(xt)
-                y = DNN_model(xt)
-            grads = g.jacobian(y, xt).numpy().squeeze()
-            dP_in = grads[0]
-            dQ_in = grads[3]
-            dQ_out = grads[4]
-            DNN_derivs[2*inlet_index] = - dP_in
-            DNN_derivs[2*inlet_index+1] = -1333.2*dQ_in
-            DNN_derivs[2*outlet_index+1] = -1333.2*dQ_out
-            DNN_derivs_all[outlet_indices.index(outlet_index)]= tuple(DNN_derivs)
-        self.mat["dC"] = DNN_derivs_all
+            dnn_input = [curr_y[wire_dict[self.connecting_wires_list[max_inlet]].LPN_solution_ids[0]], # inlet pressure
+                curr_y[wire_dict[self.connecting_wires_list[max_inlet]].LPN_solution_ids[1]]/areas[max_inlet], # inlet velocity
+                curr_y[wire_dict[self.connecting_wires_list[outlet_index]].LPN_solution_ids[1]]/areas[outlet_index], # outlet velocity,
+                curr_y[wire_dict[self.connecting_wires_list[max_inlet]].LPN_solution_ids[1]], # inlet flow
+                curr_y[wire_dict[self.connecting_wires_list[outlet_index]].LPN_solution_ids[1]], # outlet flow
+                areas[max_inlet], #inlet area
+                areas[outlet_index], # outlet area
+                angles[outlet_index], # direction change
+                num_outlets, # number of outlets
+                num_inlets,
+                0] # flow time derivative
+            dnn_input_tensor = tf.reshape(tf.convert_to_tensor(dnn_input),[1,11])
+            if "dnn_graph" in args["tf_graph_dict"]:
+              dnn_tf_concrete = args["tf_graph_dict"]["dnn_graph"]
+            else:
+              dnn_tf_concrete = self.dnn_tf.get_concrete_function(dnn_input_tensor)
+              args["tf_graph_dict"].update({"dnn_graph": dnn_tf_concrete})
+              print("adding tf.concrete_function")
+            dP_dnn_outlet, ddP_dU_outlet = dnn_tf_concrete(dnn_input_tensor)
+            dP_dnn_outlets.append(dP_dnn_outlet)
+            ddP_dU_outlets.append(ddP_dU_outlet)
+        end_time = time.time()
+        #print("delta Ps: " , dP_dnn_outlet, ddP_dU_outlet)
+        #pdb.set_trace()
+        if end_time - start_time > 0.01: print("time to apply unified0d: ", end_time - start_time)
+        assert len(dP_dnn_outlets) == num_outlets, "One coefficient should be returned per outlet."
+        return np.asarray(dP_dnn_outlets), np.asarray(ddP_dU_outlets)
+
+    def set_C(self, dP_dnn_outlets, U):
+        inlet_indices, max_inlet, num_inlets, outlet_indices, num_outlets, num_branches = self.classify_branches(U)
+        C_vec = [0] * num_branches
+        for i in range(num_branches):
+          if i in outlet_indices:
+            C_vec[i] =  -1*dP_dnn_outlets[outlet_indices.index(i)]
+        C_vec.pop(max_inlet) # remove dominant inlet entry
+        C_vec = C_vec + [0]
+        self.mat["C"] = C_vec # set c vector
+
+    def set_dC(self, ddP_dU_outlets, U):
+        inlet_indices, max_inlet, num_inlets, outlet_indices, num_outlets, num_branches = self.classify_branches(U)
+        dC = []
+        for i in range(num_branches+1):
+            dP_derivs = [0] * (2*num_branches)
+            if i == max_inlet:
+                continue
+            elif i in outlet_indices: # loop over pressure losses (rows of C)
+                ddP_dU_vec = ddP_dU_outlets[outlet_indices.index(i),:]
+                for j in range(num_branches): # loop over velocity derivatives
+                    dP_derivs[2*j + 1] = -1*ddP_dU_vec[j]
+            dC.append(tuple(dP_derivs))
+        self.mat["dC"] = dC # set c vector
+
+    def update_solution(self, args):
+        curr_y, wire_dict, U, areas, angles = self.unpack_params(args)
+        if np.sum(np.asarray(U)!=0) == 0: # if all velocities are 0, treat as normal junction (copy-pasted from normal junction code)
+            self.set_no_flow_mats() # set F matrix and c vector for zero flow case
+
+        else: # otherwise apply Unified0D model
+            self.set_F(U) # set F matrix
+            dP_outlets, ddP_dU_outlets = self.apply_dnn(args, U, areas, angles, curr_y, wire_dict) # apply unified0d
+            self.set_C(dP_outlets, U) # set C vector
+            self.set_dC(ddP_dU_outlets, U) # set dC matrix
+            #pdb.set_trace()
+
+
 
 class BloodVessel(LPNBlock):
     """

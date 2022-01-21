@@ -161,7 +161,6 @@ class GenAlpha:
         """
         Check if the analytical Jacobian (computed from form_matrix_NR) matches the numerical Jacobian
         """
-
         epsilon_list = np.power(10, np.linspace(-10, 10, 50))
         fig, axs = plt.subplots(2,6, figsize = (20, 20))
         for epsilon in epsilon_list:
@@ -209,6 +208,12 @@ class GenAlpha:
             # update solution-dependent blocks
             for b in block_list:
                 b.update_solution(args)
+                #pdb.set_trace()
+                try:
+                  b.form_derivative_num(args, 1)
+                  print("forming_der")
+                except:
+                  pdb.set_trace()
 
             # update residual and jacobian
             self.assemble_structures(block_list)
@@ -234,6 +239,9 @@ class GenAlpha:
             args['Solution'] = yaf
             iit += 1
             #print(iit, " Newton iterations.  Current residual: " , self.res)
+            if iit > 20:
+              pdb.set_trace()
+            print(iit, " Newton iterations.")
             #pdb.set_trace()
         if iit >= nit:
             print("Max NR iterations (" ,iit,") reached at time: ", t, " , max error: ", max(abs(self.res)))

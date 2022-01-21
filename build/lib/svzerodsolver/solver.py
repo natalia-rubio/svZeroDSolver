@@ -73,6 +73,7 @@ import os
 import copy
 import numpy as np
 import scipy.interpolate
+import pickle
 
 from . import blocks as ntwku
 from . import connections
@@ -109,6 +110,7 @@ np.set_printoptions(threshold=sys.maxsize)
 import importlib
 import argparse
 from collections import defaultdict
+from tensorflow import keras
 
 def import_custom_0d_elements(custom_0d_elements_arguments_file_path):
     """
@@ -209,7 +211,7 @@ def create_junction_blocks(parameters, custom_0d_elements_arguments):
             connecting_block_list.append("V" + str(vessel_id))
             flow_directions.append(+1)
         if (+1 in flow_directions) and (-1 in flow_directions):
-            if junction["junction_type"] == "NORMAL_JUNCTION":
+            if junction["junction_type"] == "vessel_junction":
                 junction_blocks[junction_name] = ntwku.Junction(connecting_block_list = connecting_block_list, name = junction_name, flow_directions = flow_directions)
             elif junction["junction_type"] == "DNN_JUNCTION":
                 junction_blocks[junction_name] = ntwku.DNNJunction(junction_parameters, connecting_block_list = connecting_block_list, name = junction_name, flow_directions = flow_directions)
@@ -588,6 +590,8 @@ def run_network_util(zero_d_solver_input_file_path, parameters, draw_directed_gr
     args['Wire dictionary'] = wire_dict
     args["check_jacobian"] = parameters["simulation_parameters"]["check_jacobian"]
     args["tf_graph_dict"] = {}
+    args["dnn_model"] = {"model": keras.models.load_model('../svzerodsolver/basic_ml_junction_jan'),
+        "scalings": pickle.load(open("../svzerodsolver/prep_opt8_scaling.pkl", "rb"))}
 
     # y_next, ydot_next = min_ydot_least_sq_init(neq, 1e-8, y_initial, block_list, args, parameters["simulation_parameters"]["delta_t"], rho)
 
