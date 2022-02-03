@@ -195,10 +195,13 @@ def create_junction_blocks(parameters, custom_0d_elements_arguments):
     junction_blocks = {} # {block_name : block_object}
     for junction in parameters["junctions"]:
         junction_name = junction["junction_name"]
-        junction_parameters = {
-            "angles" : junction["angles"],
-            "areas" : junction["areas"],
-            "lengths" : junction["lengths"]}
+        try:
+            junction_parameters = {
+                "angles" : junction["angles"],
+                "areas" : junction["areas"],
+                "lengths" : junction["lengths"]}
+        except:
+            junction_parameters = {}
         if not junction_name.startswith("J") and not junction_name[1].isnumeric():
             message = "Error. Joint name, " + junction_name + ", is not 'J' followed by numeric values. The 0D solver assumes that all joint names are 'J' followed by numeric values in the 0d solver input file. Note that the joint names are the same as the junction names."
             raise RuntimeError(message)
@@ -212,6 +215,8 @@ def create_junction_blocks(parameters, custom_0d_elements_arguments):
             flow_directions.append(+1)
         if (+1 in flow_directions) and (-1 in flow_directions):
             if junction["junction_type"] == "vessel_junction":
+                junction_blocks[junction_name] = ntwku.Junction(connecting_block_list = connecting_block_list, name = junction_name, flow_directions = flow_directions)
+            elif junction["junction_type"] == "NORMAL_JUNCTION":
                 junction_blocks[junction_name] = ntwku.Junction(connecting_block_list = connecting_block_list, name = junction_name, flow_directions = flow_directions)
             elif junction["junction_type"] == "DNN_JUNCTION":
                 junction_blocks[junction_name] = ntwku.DNNJunction(junction_parameters, connecting_block_list = connecting_block_list, name = junction_name, flow_directions = flow_directions)
@@ -592,6 +597,7 @@ def run_network_util(zero_d_solver_input_file_path, parameters, draw_directed_gr
     args["tf_graph_dict"] = {}
     args["dnn_model"] = {"model": keras.models.load_model('../svzerodsolver/basic_ml_junction_jan'),
         "scalings": pickle.load(open("../svzerodsolver/prep_opt8_scaling.pkl", "rb"))}
+    args["ydot"] = 0
 
     # y_next, ydot_next = min_ydot_least_sq_init(neq, 1e-8, y_initial, block_list, args, parameters["simulation_parameters"]["delta_t"], rho)
 
@@ -613,13 +619,17 @@ def run_network_util(zero_d_solver_input_file_path, parameters, draw_directed_gr
         args['Solution'] = y_next
         y_next, ydot_next = t_int.step(y_next, ydot_next, t_current, block_list, args, parameters["simulation_parameters"]["delta_t"])
         ylist.append(y_next)
+        if ydot_next == "bad_newton":
+            print("Stopping.  Too many Newton iterations.")
+            break
 
     if save_y_ydot_to_npy:
         save_ics(y_ydot_file_path, y_next, ydot_next, var_name_list)
 
     var_name_list_original = copy.deepcopy(var_name_list)
     results_0d = np.array(ylist)
-    zero_d_time = tlist
+    zero_d_time = tlist[0:len(ylist)]
+
     return zero_d_time, results_0d, var_name_list, y_next, ydot_next, var_name_list_original
 
 def save_ics(y_ydot_file_path, y_next, ydot_next, var_name_list):
@@ -1001,6 +1011,21 @@ def set_up_and_run_0d_simulation(zero_d_solver_input_file_path, draw_directed_gr
     set_solver_parameters(parameters)
     zero_d_time, results_0d, var_name_list, _, _, _ = run_network_util(zero_d_solver_input_file_path, parameters, draw_directed_graph, use_ICs_from_npy_file, ICs_npy_file_path, save_y_ydot_to_npy, y_ydot_file_path, simulation_start_time)
     print("0D simulation completed!\n")
+
+    # Natalia Addition
+    results_dict = reformat_network_util_results_branch(zero_d_time, results_0d, var_name_list, parameters)
+    qoi_list = ["pressure", "flow"]
+    for qoi in qoi_list:
+        csv_array = np.zeros((0,len(zero_d_time)))
+        csv_header = ""
+        for branch in results_dict["pressure"].keys():
+            csv_array = np.vstack([csv_array, results_dict[qoi][branch][0,:]])
+            csv_header = csv_header + str(qoi) + " branch " + str(branch) + " node 0" + ","
+            csv_array = np.vstack([csv_array, results_dict[qoi][branch][1,:]])
+            csv_header = csv_header + str(qoi) + " branch " + str(branch) + " node 1" + ","
+        np.savetxt(qoi + "_0d_results_normal.csv", np.transpose(csv_array), delimiter=",", fmt="%.2f",
+               header=csv_header, comments="")
+    pdb.set_trace()
 
     # postprocessing
     if last_cycle == True:

@@ -211,20 +211,37 @@ class LPNBlock:
 
     def form_derivative_num(self, args, epsilon):
       print("form deriv running")
+      #pdb.set_trace()
       self.update_solution(args)
+
+      #y_global = args['Solution']  # the current solution for all unknowns in our 0D model
+      wire_dict = args['Wire dictionary'] # connectivity dictionary
+      y_block_indices = []
+      for wire in self.connecting_wires_list:
+        y_block_indices = y_block_indices + wire_dict[wire].LPN_solution_ids
+
       C_original = self.mat["C"]
-      dC_analytical = np.asarray(self.mat["dC"])
-      preturbation_size = np.zeros(len(args["Solution"]))
-      preturbed_args = copy.deepcopy(args)
-      dC_numerical = []
-      pdb.set_trace()
-      for i in range(len(args["Solution"])):
-         preturbation_size[i] = max(np.abs(args["Solution"][i])  * epsilon, epsilon)
-         preturbed_args['Solution'] = args["Solution"]  + preturbation_size
-         self.update_solution(preturbed_args)
-         C_preturbed = self.mat["C"]
-         dC_numerical.append(C_preturbed)
-      pdb.set_trace()
+      dC_analytical = self.mat["dC"]
+      if C_original and dC_analytical:
+        #pdb.set_trace()
+
+        preturbed_args = copy.copy(args)
+        dC_numerical = []
+        #pdb.set_trace()
+        for pret_index in y_block_indices:
+          preturbation = np.zeros(len(args["Solution"]))
+          #pdb.set_trace()
+          preturbation[pret_index] = max(np.abs(args["Solution"][pret_index])  * epsilon, epsilon)
+          preturbed_args["Solution"] = args["Solution"]  + preturbation
+          #pdb.set_trace()
+          self.update_solution(preturbed_args)
+          C_preturbed = self.mat["C"]
+          dC_numerical.append([(C_preturbed[i]-C_original[i])/preturbation[pret_index] for i in range(len(C_original))])
+        dC_numerical = np.transpose(np.asarray(dC_numerical))
+        dC_analytical = np.asarray(dC_analytical)
+        print("dC_numerical", dC_numerical)
+        print("dC_analytical", dC_analytical)
+        pdb.set_trace()
 
 
     def check_jacobian(self, args):
@@ -274,11 +291,10 @@ class UNIFIED0DJunction(Junction):
         curr_y = args['Solution']  # the current solution for all unknowns in our 0D model
         wire_dict = args['Wire dictionary'] # connectivity dictionary
         areas = self.junction_parameters["areas"] # load areas
-        U = np.asarray([-1*self.flow_directions[i] * np.divide(
-            curr_y[wire_dict[self.connecting_wires_list[i]].LPN_solution_ids[1]],
-            areas[i]) for i in range(len(self.flow_directions))]) # calculate velocity in each branch (inlets positive, outlets negative)
+        Q = np.asarray([-1*self.flow_directions[i] *
+            curr_y[wire_dict[self.connecting_wires_list[i]].LPN_solution_ids[1]] for i in range(len(self.flow_directions))]) # calculate velocity in each branch (inlets positive, outlets negative)
         angles = copy.deepcopy(self.junction_parameters["angles"]) # load angles
-        return curr_y, wire_dict, U, areas, angles
+        return curr_y, wire_dict, Q, areas, angles
 
     def F_add_continuity_row(self):
         tmp = (0,)
@@ -288,13 +304,13 @@ class UNIFIED0DJunction(Junction):
         tmp += (self.flow_directions[-1],)
         self.mat['F'].append(tmp)
 
-    def classify_branches(self, U):
-        inlet_indices = list(np.asarray(np.nonzero(U>0)).astype(int)[0]) # identify inlets
-        max_inlet = np.argmax(U) # index of the inlet with max velocity (serves as dominant inlet where necessary)
+    def classify_branches(self, Q):
+        inlet_indices = list(np.asarray(np.nonzero(Q>0)).astype(int)[0]) # identify inlets
+        max_inlet = np.argmax(Q) # index of the inlet with max velocity (serves as dominant inlet where necessary)
         num_inlets = len(inlet_indices) # number of inlets
-        outlet_indices = list(np.nonzero(U<=0)[0]) # identify outlets
+        outlet_indices = list(np.nonzero(Q<=0)[0]) # identify outlets
         num_outlets = len(outlet_indices) # number of outlets
-        num_branches = U.size # number of branches
+        num_branches = Q.size # number of branches
         # inlet/outlet sanity checks
         if num_inlets ==0:
           pdb.set_trace()
@@ -308,8 +324,8 @@ class UNIFIED0DJunction(Junction):
                          range(self.num_connections - 1)] # copy-pasted from normal junction
         self.F_add_continuity_row() # add mass conservation row
 
-    def set_F(self, U):
-        inlet_indices, max_inlet, num_inlets, outlet_indices, num_outlets, num_branches = self.classify_branches(U)
+    def set_F(self, Q):
+        inlet_indices, max_inlet, num_inlets, outlet_indices, num_outlets, num_branches = self.classify_branches(Q)
         self.mat['F'] = []
         for i in range(0,num_branches): # loop over branches- each branch (exept the "presumed inlet" is a row of F)
             if i == max_inlet:
@@ -329,46 +345,47 @@ class UNIFIED0DJunction(Junction):
         return angles
 
     @tf.function
-    def unified0d_tf(self, U_tensor, areas_tensor, angles_tensor, num_outlets, outlet_indices, max_inlet):
+    def unified0d_tf(self, Q_tensor, areas_tensor, angles_tensor, num_outlets, outlet_indices, max_inlet):
         rho = 1.06 # density of blood
         with tf.GradientTape(watch_accessed_variables=False, persistent=False) as tape:
           #create_tape_time = time.time()
-          tape.watch(U_tensor) # track operations applied to U_tensor
+          tape.watch(Q_tensor) # track operations applied to Q_tensor
+          U_tensor = tf.divide(Q_tensor, areas_tensor)
           C_outlets, outlets = junction_loss_coeff_tf(U_tensor, areas_tensor, angles_tensor) # run Unified0D junction loss coefficient function
           dP_unified0d_outlets = (rho*tf.multiply(
               C_outlets, tf.square(tf.boolean_mask(U_tensor, outlets))) + 0.5*rho*tf.subtract(
               tf.square(tf.slice(U_tensor, begin = [max_inlet], size = [1])), tf.square(tf.boolean_mask(U_tensor, outlets)))) # compute pressure loss according to the unified 0d model
-        ddP_dU_outlets = tape.jacobian(dP_unified0d_outlets, U_tensor) # get derivatives of pressure loss coeff wrt. U_tensor
+        ddP_dU_outlets = tape.jacobian(dP_unified0d_outlets, Q_tensor) # get derivatives of pressure loss coeff wrt. U_tensor
         return dP_unified0d_outlets, ddP_dU_outlets, outlets
 
-    def apply_unified0d(self, args, U, areas, angles):
-        inlet_indices, max_inlet, num_inlets, outlet_indices, num_outlets, num_branches = self.classify_branches(U)
+    def apply_unified0d(self, args, Q, areas, angles):
+        inlet_indices, max_inlet, num_inlets, outlet_indices, num_outlets, num_branches = self.classify_branches(Q)
         angles = self.configure_angles(copy.deepcopy(angles), max_inlet, num_branches) # configure angles for unified0d
-        U_tensor = tf.Variable(tf.convert_to_tensor(U)) # convert U to a tensor
-        areas_tensor = tf.convert_to_tensor(areas, dtype="double") # convert U to a tensor
-        angles_tensor = tf.convert_to_tensor(angles, dtype="double") # convert U to a tensor
+        Q_tensor = tf.Variable(tf.convert_to_tensor(Q)) # convert Q to a tensor
+        areas_tensor = tf.convert_to_tensor(areas, dtype="double") # convert areas to a tensor
+        angles_tensor = tf.convert_to_tensor(angles, dtype="double") # convert angles to a tensor
         outlet_indices_tensor = tf.convert_to_tensor(outlet_indices, dtype="double") # convert U to a tensor
-        max_inlet_int = tf.constant(max_inlet, dtype="int32") # convert U to a tensor
-        num_outlets_int = tf.constant(num_outlets, dtype="int32") # convert U to a tensor
+        max_inlet_int = tf.constant(max_inlet, dtype="int32") # convert max_inlet to a constant
+        num_outlets_int = tf.constant(num_outlets, dtype="int32") # convert num_outlets to a constant
         start_time = time.time()
         branch_config = tuple(inlet_indices + outlet_indices)
         if branch_config in args["tf_graph_dict"]:
           unified_tf_concrete = args["tf_graph_dict"][branch_config]
         else:
-          unified_tf_concrete = self.unified0d_tf.get_concrete_function(U_tensor, areas_tensor, angles_tensor, num_outlets_int, outlet_indices_tensor, max_inlet_int)
+          unified_tf_concrete = self.unified0d_tf.get_concrete_function(Q_tensor, areas_tensor, angles_tensor, num_outlets_int, outlet_indices_tensor, max_inlet_int)
           args["tf_graph_dict"].update({branch_config: unified_tf_concrete})
           print("adding tf.concrete_function for ", branch_config)
-        dP_unified0d_outlets, ddP_dU_outlets, outlets = unified_tf_concrete(U_tensor, areas_tensor, angles_tensor, num_outlets_int, outlet_indices_tensor, max_inlet_int)
+        dP_unified0d_outlets, ddP_dU_outlets, outlets = unified_tf_concrete(Q_tensor, areas_tensor, angles_tensor, num_outlets_int, outlet_indices_tensor, max_inlet_int)
 
         end_time = time.time()
         #print(U)
         if end_time - start_time > 0.01: print("time to apply unified0d: ", end_time - start_time)
         assert tf.size(dP_unified0d_outlets) == num_outlets, "One coefficient should be returned per outlet."
-        assert np.array_equal(U[outlets.numpy()], U[outlet_indices])
+        assert np.array_equal(Q[outlets.numpy()], Q[outlet_indices])
         return dP_unified0d_outlets.numpy(), ddP_dU_outlets.numpy(), outlets
 
-    def set_C(self, dP_unified0d_outlets, U):
-        inlet_indices, max_inlet, num_inlets, outlet_indices, num_outlets, num_branches = self.classify_branches(U)
+    def set_C(self, dP_unified0d_outlets, Q):
+        inlet_indices, max_inlet, num_inlets, outlet_indices, num_outlets, num_branches = self.classify_branches(Q)
         C_vec = [0] * num_branches
         for i in range(num_branches):
           if i in outlet_indices:
@@ -377,8 +394,9 @@ class UNIFIED0DJunction(Junction):
         C_vec = C_vec + [0] # mass conservation
         self.mat["C"] = C_vec # set c vector
 
-    def set_dC(self, ddP_dU_outlets, U):
-        inlet_indices, max_inlet, num_inlets, outlet_indices, num_outlets, num_branches = self.classify_branches(U)
+    def set_dC(self, ddP_dU_outlets, Q):
+        inlet_indices, max_inlet, num_inlets, outlet_indices, num_outlets, num_branches = self.classify_branches(Q)
+        dC_sign = [-1*self.flow_directions[i] for i in range(len(self.flow_directions))]
         dC = []
         for i in range(num_branches+1):
             dP_derivs = [0] * (2*num_branches)
@@ -387,7 +405,7 @@ class UNIFIED0DJunction(Junction):
             elif i in outlet_indices: # loop over pressure losses (rows of C)
                 ddP_dU_vec = ddP_dU_outlets[outlet_indices.index(i),:]
                 for j in range(num_branches): # loop over velocity derivatives
-                    dP_derivs[2*j + 1] = -1*ddP_dU_vec[j]
+                    dP_derivs[2*j + 1] = -1*ddP_dU_vec[j] * dC_sign[j]
             dC.append(tuple(dP_derivs))
         self.mat["dC"] = dC # set c vector
 
@@ -395,7 +413,7 @@ class UNIFIED0DJunction(Junction):
         curr_y, wire_dict, U, areas, angles = self.unpack_params(args)
         if np.sum(np.asarray(U)!=0) == 0: # if all velocities are 0, treat as normal junction (copy-pasted from normal junction code)
             self.set_no_flow_mats() # set F matrix and c vector for zero flow case
-            #print("all zeros")
+            print("all zeros")
         else: # otherwise apply Unified0D model
             self.set_F(U) # set F matrix
             dP_outlets, ddP_dU_outlets, outlets = self.apply_unified0d(args, U, areas, copy.deepcopy(angles)) # apply unified0d
@@ -420,12 +438,10 @@ class DNNJunction(Junction):
         curr_y = args['Solution']  # the current solution for all unknowns in our 0D model
         wire_dict = args['Wire dictionary'] # connectivity dictionary
         areas = self.junction_parameters["areas"] # load areas
-        U = np.asarray([-1*self.flow_directions[i] * np.divide(
-            curr_y[wire_dict[self.connecting_wires_list[i]].LPN_solution_ids[1]],
-            areas[i]) for i in range(len(self.flow_directions))]) # calculate velocity in each branch (inlets positive, outlets negative)
+        Q = np.asarray([-1*self.flow_directions[i] * curr_y[wire_dict[self.connecting_wires_list[i]].LPN_solution_ids[1]] for i in range(len(self.flow_directions))]) # calculate velocity in each branch (inlets positive, outlets negative)
         angles = copy.deepcopy(self.junction_parameters["angles"]) # load angles
         angles.insert(0,0) # add in the angle for the input file "presumed inlet" (first entry)
-        return curr_y, wire_dict, U, areas, angles
+        return curr_y, wire_dict, Q, areas, angles
 
     def F_add_continuity_row(self):
         tmp = (0,)
@@ -477,24 +493,31 @@ class DNNJunction(Junction):
         ddP_dU_outlet = tape.jacobian(dP_dnn_outlet, dnn_input_tensor) # get derivatives of pressure loss coeff wrt. U_tensor
         return dP_dnn_outlet, ddP_dU_outlet
 
-    def apply_dnn(self, args, U, areas, angles, curr_y, wire_dict):
-        inlet_indices, max_inlet, num_inlets, outlet_indices, num_outlets, num_branches = self.classify_branches(U)
-        start_time = time.time()
-        dP_dnn_outlets = []
-        ddP_dU_outlets = []
-        for outlet_index in outlet_indices:
-            dnn_input = [curr_y[wire_dict[self.connecting_wires_list[max_inlet]].LPN_solution_ids[0]], # inlet pressure
-                curr_y[wire_dict[self.connecting_wires_list[max_inlet]].LPN_solution_ids[1]]/areas[max_inlet], # inlet velocity
-                curr_y[wire_dict[self.connecting_wires_list[outlet_index]].LPN_solution_ids[1]]/areas[outlet_index], # outlet velocity,
-                curr_y[wire_dict[self.connecting_wires_list[max_inlet]].LPN_solution_ids[1]], # inlet flow
-                curr_y[wire_dict[self.connecting_wires_list[outlet_index]].LPN_solution_ids[1]], # outlet flow
+    def get_dnn_input(self, args, max_inlet, outlet_index, Q, areas, angles):
+      curr_y = args['Solution']  # the current solution for all unknowns in our 0D model
+      wire_dict = args['Wire dictionary'] # connectivity dictionary
+      inlet_indices, max_inlet, num_inlets, outlet_indices, num_outlets, num_branches = self.classify_branches(Q)
+      dnn_input = [curr_y[wire_dict[self.connecting_wires_list[max_inlet]].LPN_solution_ids[0]], # inlet pressure
+                Q[max_inlet]/areas[max_inlet], # inlet velocity
+                -Q[outlet_index]/areas[outlet_index], # outlet velocity,
+                Q[max_inlet], # inlet flow
+                -Q[outlet_index], # outlet flow
                 areas[max_inlet], #inlet area
                 areas[outlet_index], # outlet area
                 angles[outlet_index], # direction change
                 num_outlets, # number of outlets
-                num_inlets,
-                0] # flow time derivative
-            dnn_input_tensor = tf.reshape(tf.convert_to_tensor(dnn_input),[1,11])
+                num_inlets, # number of inlets
+                args["ydot"]] # flow time derivative
+      dnn_input_tensor = tf.reshape(tf.convert_to_tensor(dnn_input),[1,11])
+      return dnn_input_tensor
+
+    def apply_dnn(self, args, Q, areas, angles, curr_y, wire_dict):
+        inlet_indices, max_inlet, num_inlets, outlet_indices, num_outlets, num_branches = self.classify_branches(Q)
+        start_time = time.time()
+        dP_dnn_outlets = []
+        ddP_outlets = []
+        for outlet_index in outlet_indices:
+            dnn_input_tensor = self.get_dnn_input(args, max_inlet, outlet_index, Q, areas, angles)
             if "dnn_graph" in args["tf_graph_dict"]:
               dnn_tf_concrete = args["tf_graph_dict"]["dnn_graph"]
             else:
@@ -503,36 +526,44 @@ class DNNJunction(Junction):
               print("adding tf.concrete_function")
             dP_dnn_outlet, ddP_dU_outlet = dnn_tf_concrete(dnn_input_tensor)
             dP_dnn_outlets.append(dP_dnn_outlet)
-            ddP_dU_outlets.append(ddP_dU_outlet)
+            ddP_outlets.append(ddP_dU_outlet)
         end_time = time.time()
         #print("delta Ps: " , dP_dnn_outlet, ddP_dU_outlet)
         #pdb.set_trace()
         if end_time - start_time > 0.01: print("time to apply unified0d: ", end_time - start_time)
         assert len(dP_dnn_outlets) == num_outlets, "One coefficient should be returned per outlet."
-        return np.asarray(dP_dnn_outlets), np.asarray(ddP_dU_outlets)
+        return np.concatenate(np.concatenate(np.asarray(dP_dnn_outlets))), np.asarray(ddP_outlets)
 
     def set_C(self, dP_dnn_outlets, U):
         inlet_indices, max_inlet, num_inlets, outlet_indices, num_outlets, num_branches = self.classify_branches(U)
         C_vec = [0] * num_branches
         for i in range(num_branches):
           if i in outlet_indices:
+            #pdb.set_trace()
             C_vec[i] =  -1*dP_dnn_outlets[outlet_indices.index(i)]
         C_vec.pop(max_inlet) # remove dominant inlet entry
         C_vec = C_vec + [0]
         self.mat["C"] = C_vec # set c vector
 
-    def set_dC(self, ddP_dU_outlets, U):
-        inlet_indices, max_inlet, num_inlets, outlet_indices, num_outlets, num_branches = self.classify_branches(U)
+    def set_dC(self, ddP_outlets, Q, areas):
+        inlet_indices, max_inlet, num_inlets, outlet_indices, num_outlets, num_branches = self.classify_branches(Q)
+        #pdb.set_trace()
+        Q_sign = [-1*self.flow_directions[i] for i in range(len(self.flow_directions))]
         dC = []
         for i in range(num_branches+1):
             dP_derivs = [0] * (2*num_branches)
             if i == max_inlet:
-                continue
-            elif i in outlet_indices: # loop over pressure losses (rows of C)
-                ddP_dU_vec = ddP_dU_outlets[outlet_indices.index(i),:]
-                for j in range(num_branches): # loop over velocity derivatives
-                    dP_derivs[2*j + 1] = -1*ddP_dU_vec[j]
+              continue
+            elif i in outlet_indices:
+              outlet_number = outlet_indices.index(i) # loop over pressure losses (rows of C)
+              #pdb.set_trace()
+              #print("max_inlet", max_inlet)
+              #print("Q", Q)
+              dP_derivs[2*max_inlet] = -ddP_outlets[outlet_number][0][0][0][0] # inlet pressure derivative
+              dP_derivs[2*max_inlet +1 ] = -1*Q_sign[max_inlet]*(ddP_outlets[outlet_number][0][0][0][1]/areas[max_inlet] + ddP_outlets[outlet_number][0][0][0][3])# inlet_velocity derivative
+              dP_derivs[2*i + 1] = 1*Q_sign[i]*(ddP_outlets[outlet_number][0][0][0][2]/areas[i]+ ddP_outlets[outlet_number][0][0][0][4])# outlet_velocity derivative
             dC.append(tuple(dP_derivs))
+
         self.mat["dC"] = dC # set c vector
 
     def update_solution(self, args):
@@ -544,9 +575,8 @@ class DNNJunction(Junction):
             self.set_F(U) # set F matrix
             dP_outlets, ddP_dU_outlets = self.apply_dnn(args, U, areas, angles, curr_y, wire_dict) # apply unified0d
             self.set_C(dP_outlets, U) # set C vector
-            self.set_dC(ddP_dU_outlets, U) # set dC matrix
+            self.set_dC(ddP_dU_outlets, U, areas) # set dC matrix
             #pdb.set_trace()
-
 
 
 class BloodVessel(LPNBlock):

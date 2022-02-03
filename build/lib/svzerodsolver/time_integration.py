@@ -181,6 +181,9 @@ class GenAlpha:
         plt.savefig("check_jacobian_plot.png")
         plt.show()
 
+    def visualize_solution(y):
+        pass
+
     def step(self, y, ydot, t, block_list, args, dt, nit=1e5):
         """
         Perform one time step
@@ -209,11 +212,19 @@ class GenAlpha:
             for b in block_list:
                 b.update_solution(args)
                 #pdb.set_trace()
-                try:
-                  b.form_derivative_num(args, 1)
-                  print("forming_der")
-                except:
-                  pdb.set_trace()
+                if iit > 30:
+                  print(iit, " Newton iterations.")
+                  print("time step", t )
+                  b.form_derivative_num(args, 1e-6)
+                  curr_ydot = "bad_newton"
+            if curr_ydot == "bad_newton":
+                break
+
+
+                  # if b == block_list[-1]
+                  #   print("last block")
+#                print("forming_der")
+
 
             # update residual and jacobian
             self.assemble_structures(block_list)
@@ -239,16 +250,17 @@ class GenAlpha:
             args['Solution'] = yaf
             iit += 1
             #print(iit, " Newton iterations.  Current residual: " , self.res)
-            if iit > 20:
-              pdb.set_trace()
-            print(iit, " Newton iterations.")
+
             #pdb.set_trace()
+        nit = 30
         if iit >= nit:
             print("Max NR iterations (" ,iit,") reached at time: ", t, " , max error: ", max(abs(self.res)))
-        print("timestep ", t, " completed.  ", iit, " Newton iterations.")
-        # update time step
-        curr_y = y + (yaf - y) / self.alpha_f
-        curr_ydot = ydot + (ydotam - ydot) / self.alpha_m
+            curr_y = y + (yaf - y) / self.alpha_f
+        else:
+            print("timestep ", t, " completed.  ", iit, " Newton iterations.")
+            # update time step
+            curr_y = y + (yaf - y) / self.alpha_f
+            curr_ydot = ydot + (ydotam - ydot) / self.alpha_m
 
         args['Time'] = t + dt
 
