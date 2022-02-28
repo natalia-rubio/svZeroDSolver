@@ -210,7 +210,7 @@ class LPNBlock:
             return self.LPN_solution_ids[vnum]
 
     def form_derivative_num(self, args, epsilon):
-      print("form deriv running")
+      #print("form deriv running")
       #pdb.set_trace()
       self.update_solution(args)
 
@@ -239,9 +239,10 @@ class LPNBlock:
           dC_numerical.append([(C_preturbed[i]-C_original[i])/preturbation[pret_index] for i in range(len(C_original))])
         dC_numerical = np.transpose(np.asarray(dC_numerical))
         dC_analytical = np.asarray(dC_analytical)
-        print("dC_numerical", dC_numerical)
-        print("dC_analytical", dC_analytical)
-        pdb.set_trace()
+        #print("dC_numerical", dC_numerical)
+        #print("dC_analytical", dC_analytical)
+        return dC_numerical, dC_analytical
+        #pdb.set_trace()
 
 
     def check_jacobian(self, args):
@@ -286,15 +287,41 @@ class UNIFIED0DJunction(Junction):
         Junction.__init__(self, connecting_block_list, name=name, flow_directions=flow_directions)
         self.flow_directions = flow_directions
         self.junction_parameters = junction_parameters
-
+        self.rep_Q_inds = {}
+        self.rho = 1.06
+        for Q_ind in range(len(self.flow_directions)):
+            self.rep_Q_inds.update({Q_ind:[]})
     def unpack_params(self, args):
         curr_y = args['Solution']  # the current solution for all unknowns in our 0D model
         wire_dict = args['Wire dictionary'] # connectivity dictionary
         areas = self.junction_parameters["areas"] # load areas
         Q = np.asarray([-1*self.flow_directions[i] *
             curr_y[wire_dict[self.connecting_wires_list[i]].LPN_solution_ids[1]] for i in range(len(self.flow_directions))]) # calculate velocity in each branch (inlets positive, outlets negative)
+        small_Q = np.reshape(np.asarray(np.where(np.abs(Q) <= 0.1)),(-1,))
+        # if not np.all(Q==0):
+        #     Q[small_Q] = 0
         angles = copy.deepcopy(self.junction_parameters["angles"]) # load angles
-        return curr_y, wire_dict, Q, areas, angles
+        return curr_y, wire_dict, Q, areas, angles, small_Q
+
+    def check_rep_Q(self, Q):
+        Q_frozen = copy.deepcopy(Q)
+        small_Qs = np.asarray([])
+        #small_Qs = np.extract(np.abs(Q)<=(np.max(np.abs(Q))/100), Q)
+        if small_Qs.size > 0:
+            print("small Qs: ", small_Qs)
+        Q_freeze_ind = []
+        for small_Q in small_Qs:
+            Q_ind = list(Q).index(small_Q)
+            self.rep_Q_inds[Q_ind].append(small_Q)
+            num_reps = np.count_nonzero(self.rep_Q_inds[Q_ind] == small_Q)
+            #num_reps = np.count_nonzero(np.abs(self.rep_Q_inds[Q_ind] - small_Q)< 0.001)
+            #num_reps = np.count_nonzero(np.abs((self.rep_Q_inds[Q_ind] - small_Q)/small_Q)< 0.001)
+            if num_reps >= 2:
+                Q_freeze_ind.append(Q_ind)
+                Q_frozen[Q_ind] = 0
+                print("freezing Q for branch ", Q_ind)
+        return Q_frozen, Q_freeze_ind
+
 
     def F_add_continuity_row(self):
         tmp = (0,)
@@ -305,17 +332,21 @@ class UNIFIED0DJunction(Junction):
         self.mat['F'].append(tmp)
 
     def classify_branches(self, Q):
-        inlet_indices = list(np.asarray(np.nonzero(Q>0)).astype(int)[0]) # identify inlets
-        max_inlet = np.argmax(Q) # index of the inlet with max velocity (serves as dominant inlet where necessary)
+        inlet_indices = list(np.asarray(np.nonzero(Q>=0)).astype(int)[0]) # identify inlets
+        Q_in = Q[inlet_indices]
+        max_inlet_tol = 0.01
+        #pdb.set_trace()
+        max_inlet_cands = np.asarray(inlet_indices)[Q_in > (np.max(Q_in)-max_inlet_tol)]
+        max_inlet = np.min(max_inlet_cands)
         num_inlets = len(inlet_indices) # number of inlets
-        outlet_indices = list(np.nonzero(Q<=0)[0]) # identify outlets
+        outlet_indices = list(np.nonzero(Q<0)[0]) # identify outlets
         num_outlets = len(outlet_indices) # number of outlets
         num_branches = Q.size # number of branches
         # inlet/outlet sanity checks
         if num_inlets ==0:
           pdb.set_trace()
         assert num_inlets != 0, "No junction inlet."
-        assert num_outlets !=0, "No junction outlet."
+        assert num_outlets !=0, "No junction outlet. Q: " + str(Q)
         assert num_inlets + num_outlets == num_branches, "Sum of inlets and outlets does not equal the number of branches."
         return inlet_indices, max_inlet, num_inlets, outlet_indices, num_outlets, num_branches
 
@@ -342,6 +373,7 @@ class UNIFIED0DJunction(Junction):
         for i in range(num_branches): # loop over all angles
             angles[i] = angles[i] + angle_shift # shift all junction angles
         assert len(angles) == num_branches, 'One angle should be provided for each branch'
+        #print(angles)
         return angles
 
     @tf.function
@@ -379,23 +411,29 @@ class UNIFIED0DJunction(Junction):
 
         end_time = time.time()
         #print(U)
-        if end_time - start_time > 0.01: print("time to apply unified0d: ", end_time - start_time)
+        if end_time - start_time > 0.1: print("time to apply unified0d: ", end_time - start_time)
         assert tf.size(dP_unified0d_outlets) == num_outlets, "One coefficient should be returned per outlet."
         assert np.array_equal(Q[outlets.numpy()], Q[outlet_indices])
         return dP_unified0d_outlets.numpy(), ddP_dU_outlets.numpy(), outlets
 
-    def set_C(self, dP_unified0d_outlets, Q):
+    def set_C(self, dP_unified0d_outlets, Q, areas):
         inlet_indices, max_inlet, num_inlets, outlet_indices, num_outlets, num_branches = self.classify_branches(Q)
         C_vec = [0] * num_branches
         for i in range(num_branches):
           if i in outlet_indices:
             C_vec[i] =  -1*dP_unified0d_outlets[outlet_indices.index(i)]
+          elif i != max_inlet:
+            C_vec[i] = - 0.5 * self.rho * (np.square(Q[max_inlet]/areas[max_inlet]) - np.square(Q[i]/areas[i]))
         C_vec.pop(max_inlet) # remove dominant inlet entry
         C_vec = C_vec + [0] # mass conservation
         self.mat["C"] = C_vec # set c vector
 
-    def set_dC(self, ddP_dU_outlets, Q):
+    def set_dC(self, ddP_dU_outlets, Q, Q_freeze_ind, areas):
         inlet_indices, max_inlet, num_inlets, outlet_indices, num_outlets, num_branches = self.classify_branches(Q)
+
+        for small_Q_ind in Q_freeze_ind:
+            ddP_dU_outlets[:, small_Q_ind] = 0
+
         dC_sign = [-1*self.flow_directions[i] for i in range(len(self.flow_directions))]
         dC = []
         for i in range(num_branches+1):
@@ -406,19 +444,23 @@ class UNIFIED0DJunction(Junction):
                 ddP_dU_vec = ddP_dU_outlets[outlet_indices.index(i),:]
                 for j in range(num_branches): # loop over velocity derivatives
                     dP_derivs[2*j + 1] = -1*ddP_dU_vec[j] * dC_sign[j]
+            elif i in inlet_indices:
+                dP_derivs[2*max_inlet + 1] = - self.rho * (Q[max_inlet]/areas[max_inlet])* (1/areas[max_inlet])
+                dP_derivs[2*i + 1] = self.rho * (Q[i]/areas[i])* (1/areas[i])
             dC.append(tuple(dP_derivs))
         self.mat["dC"] = dC # set c vector
 
     def update_solution(self, args):
-        curr_y, wire_dict, U, areas, angles = self.unpack_params(args)
-        if np.sum(np.asarray(U)!=0) == 0: # if all velocities are 0, treat as normal junction (copy-pasted from normal junction code)
+        curr_y, wire_dict, Q, areas, angles, small_Q = self.unpack_params(args)
+        Q_frozen, Q_freeze_ind = self.check_rep_Q(Q)
+        if np.sum(np.asarray(Q)!=0) == 0: # if all velocities are 0, treat as normal junction (copy-pasted from normal junction code)
             self.set_no_flow_mats() # set F matrix and c vector for zero flow case
             print("all zeros")
         else: # otherwise apply Unified0D model
-            self.set_F(U) # set F matrix
-            dP_outlets, ddP_dU_outlets, outlets = self.apply_unified0d(args, U, areas, copy.deepcopy(angles)) # apply unified0d
-            self.set_C(dP_outlets, U) # set C vector
-            self.set_dC(ddP_dU_outlets, U) # set dC matrix
+            self.set_F(Q) # set F matrix
+            dP_outlets, ddP_dU_outlets, outlets = self.apply_unified0d(args, Q_frozen, areas, copy.deepcopy(angles)) # apply unified0d
+            self.set_C(dP_outlets, Q_frozen, areas) # set C vector
+            self.set_dC(ddP_dU_outlets, Q_frozen, Q_freeze_ind, areas) # set dC matrix
             #pdb.set_trace()
 
 
@@ -453,7 +495,11 @@ class DNNJunction(Junction):
 
     def classify_branches(self, U):
         inlet_indices = list(np.asarray(np.nonzero(U>0)).astype(int)[0]) # identify inlets
-        max_inlet = np.argmax(U) # index of the inlet with max velocity (serves as dominant inlet where necessary)
+        U_in = U[inlet_indices]
+        max_inlet_tol = 0.01
+        max_inlet_cands = inlet_indices[U_in > (np.argmax(U_in)-max_inlet_tol)]
+        max_inlet = np.argmin(max_inlet_cands)
+        #max_inlet = np.argmax(U) # index of the inlet with max velocity (serves as dominant inlet where necessary)
         num_inlets = len(inlet_indices) # number of inlets
         outlet_indices = list(np.nonzero(U<=0)[0]) # identify outlets
         num_outlets = len(outlet_indices) # number of outlets

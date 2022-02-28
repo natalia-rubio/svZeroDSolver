@@ -36,6 +36,7 @@ def wrap_to_2pi(angle):
     return angle
 
 def junction_loss_coeff_tf(U, A, theta):
+
     theta = tf.map_fn(wrap_to_pi, theta)
     flow_rate = tfm.multiply(U, A) # flow rate
     inlets = tf.greater_equal(flow_rate, tf.constant([0], dtype= "float64")) # identify inlets
@@ -90,10 +91,3 @@ def junction_loss_coeff_tf(U, A, theta):
             tfm.multiply(area_ratio, flow_ratio)))) # compute C
 
     return (C_outlets, outlets)
-
-
-
-
-
-
-

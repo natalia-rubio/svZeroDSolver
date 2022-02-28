@@ -590,7 +590,7 @@ def run_network_util(zero_d_solver_input_file_path, parameters, draw_directed_gr
 
     rho = 0.1
     args = {}
-    args['Time step'] = parameters["simulation_parameters"]["delta_t"]
+    args['Time step'] = parameters["simulation_parameters"]["delta_t"]/2
     args['rho'] = rho
     args['Wire dictionary'] = wire_dict
     args["check_jacobian"] = parameters["simulation_parameters"]["check_jacobian"]
@@ -1013,6 +1013,9 @@ def set_up_and_run_0d_simulation(zero_d_solver_input_file_path, draw_directed_gr
     print("0D simulation completed!\n")
 
     # Natalia Addition
+    with open('../svzerodsolver/tf_graph_dict.pickle', 'wb') as handle:
+        pickle.dump(args["tf_graph_dict"], handle)
+
     results_dict = reformat_network_util_results_branch(zero_d_time, results_0d, var_name_list, parameters)
     qoi_list = ["pressure", "flow"]
     for qoi in qoi_list:

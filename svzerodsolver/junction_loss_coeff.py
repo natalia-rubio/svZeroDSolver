@@ -35,12 +35,10 @@ def wrap_to_2pi(angle):
 wrap_to_2pi = np.vectorize(wrap_to_2pi)
 
 def junction_loss_coeff(U, A, theta):
-    #pdb.set_trace()
     theta = wrap_to_pi(theta)
     flow_rate = np.multiply(U, A) # flow rate
     inlets = (flow_rate >= 0).astype(bool) # identify inlets
     outlets = (flow_rate < 0).astype(bool) # identify outlets
-    #pdb.set_trace()
     # Angle Manipulations ------------------------------------------------
 
     pseudo_outlet_angle = np.mean(theta[outlets]) # initialize pseudo-outlet angle
@@ -79,6 +77,7 @@ def junction_loss_coeff(U, A, theta):
     # Calculate Loss Coefficients ---------------------------------------
 
     C = np.zeros((np.size(U),))
+    print("flow ratio: ", flow_ratio)
     C[outlets] = np.multiply(
             (1-np.exp(-flow_ratio/0.02)),
             np.subtract(1, np.divide(np.cos(0.75*(np.subtract(np.pi, phi))),
@@ -99,10 +98,3 @@ def junction_loss_coeff(U, A, theta):
 
 
     return (C, K, energy_transfer_factor)
-
-
-
-
-
-
-

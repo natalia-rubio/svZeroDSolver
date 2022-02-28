@@ -207,23 +207,45 @@ class GenAlpha:
 
         self.res = [1e16]
         iit = 0
+        y_step_factor = 1
+        Q_hist = {}
+
+        np.set_printoptions(precision=3)
+        y_step_factor = 1
         while np.max(np.abs(self.res)) > 5e-4 and iit < nit:
             # update solution-dependent blocks
+            #y_step_factor = 1
+            if np.sqrt(iit)%3 == 0 and iit>2:
+                y_step_factor = y_step_factor/2
+                print("Decreasing Newton step size.")
+                pdb.set_trace()
+
             for b in block_list:
                 b.update_solution(args)
-                #pdb.set_trace()
-                if iit > 30:
-                  print(iit, " Newton iterations.")
-                  print("time step", t )
-                  b.form_derivative_num(args, 1e-6)
-                  curr_ydot = "bad_newton"
-            if curr_ydot == "bad_newton":
-                break
+                if iit > 4:
+                    if b.type == "Junction":
+                        Q = b.unpack_params(args)[2]
+                        A = b.unpack_params(args)[3]
+                        th = b.unpack_params(args)[4]
+                        print("Newton iteration ", iit, ", timestep", t , ", block name: ", b.name , ". Q: " , Q)
+                        # print("A: ", A)
+                        # print("th: ", th)
+                        dC_numerical, dC_analytical = b.form_derivative_num(args, 1e-4)
+                        if iit > 10:
+                            pdb.set_trace()
 
 
-                  # if b == block_list[-1]
-                  #   print("last block")
-#                print("forming_der")
+                # if iit > 10:
+                #     if b.type == "Junction":
+                #         if b.name not in Q_hist:
+                #             Q_hist.update({b.name: [np.zeros((5,)), np.zeros((5,)), np.zeros((5,)), np.zeros((5,))]})
+                #         #pdb.set_trace()
+                #         Q = b.unpack_params(args)[2]
+                #         Q_hist.update({b.name: [Q] + Q_hist[b.name][:-1]})
+                #         if np.all(Q_hist[b.name][0] == Q_hist[b.name][2]):
+                #             y_step_factor = y_step_factor/2
+                #             print("Oscillation detected.  Decreasing Newton step size.")
+                #             pdb.set_trace()
 
 
             # update residual and jacobian
@@ -237,7 +259,7 @@ class GenAlpha:
                     self.check_jacobian(copy.deepcopy(self.res), ydotam, args, block_list)
 
             # solve for Newton increment
-            dy = scipy.sparse.linalg.spsolve(csr_matrix(self.M), self.res)
+            dy = scipy.sparse.linalg.spsolve(csr_matrix(self.M), self.res) * y_step_factor
             # pdb.set_trace()
             # dy = scipy.sparse.linalg.spsolve(csr_matrix(J_numerical), self.res)
             # update solution
@@ -249,8 +271,7 @@ class GenAlpha:
 
             args['Solution'] = yaf
             iit += 1
-            #print(iit, " Newton iterations.  Current residual: " , self.res)
-
+            print(iit, " Newton iterations.  Current residual: " , np.max(np.abs(self.res)))
             #pdb.set_trace()
         nit = 30
         if iit >= nit:
