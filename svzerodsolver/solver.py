@@ -590,7 +590,7 @@ def run_network_util(zero_d_solver_input_file_path, parameters, draw_directed_gr
 
     rho = 0.1
     args = {}
-    args['Time step'] = parameters["simulation_parameters"]["delta_t"]/2
+    args['Time step'] = parameters["simulation_parameters"]["delta_t"]
     args['rho'] = rho
     args['Wire dictionary'] = wire_dict
     args["check_jacobian"] = parameters["simulation_parameters"]["check_jacobian"]

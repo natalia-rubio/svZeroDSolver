@@ -80,12 +80,6 @@ class GenAlpha:
             self.mat[v] = np.zeros(self.n)
 
         # Natalia Addition
-#        x =
-#        xt = tf.convert_to_tensor(x.reshape((1,x.size)))
-#        with tf.GradientTape() as g:
-#            g.watch(xt)
-#            y = model(xt)
-#        grads = g.jacobian(y, xt).numpy().squeeze()
 
     def assemble_structures(self, block_list):
         """
@@ -184,96 +178,62 @@ class GenAlpha:
     def visualize_solution(y):
         pass
 
+    def take_newt_step(self, y_new, ydotam_new, args, block_list, dt):
+        args["Solution"] = y_new
+        for b in block_list:
+            b.update_solution(args)
+        self.assemble_structures(block_list); self.form_rhs_NR(y_new, ydotam_new); self.form_matrix_NR(dt)
+        res_new = np.max(np.abs(copy.deepcopy(self.res)))
+        return res_new
+
     def step(self, y, ydot, t, block_list, args, dt, nit=1e5):
         """
         Perform one time step
         """
-        # initial guess for time step
-        curr_y = y.copy() + 0.5 * dt * ydot
-        curr_ydot = ydot.copy() * ((self.gamma - 0.5) / self.gamma)
+        np.set_printoptions(precision=3)
 
-        # Substep level quantities
-        yaf = y + self.alpha_f * (curr_y - y)
-        ydotam = ydot + self.alpha_m * (curr_ydot - ydot)
+        curr_y = y.copy() + 0.5 * dt * ydot # initial guess for time step
+        curr_ydot = ydot.copy() * ((self.gamma - 0.5) / self.gamma) # initial guess for time step
 
-        # initialize solution
-        args['Time'] = t + self.alpha_f * dt
-        args['Solution'] = yaf
+        yaf = y + self.alpha_f * (curr_y - y) # Substep level quantities
+        ydotam = ydot + self.alpha_m * (curr_ydot - ydot) # Substep level quantities
+
+        args['Time'] = t + self.alpha_f * dt # initialize solution
+        args['Solution'] = yaf # initialize solution
 
         # initialize blocks
         for b in block_list:
             b.update_constant()
             b.update_time(args)
+            b.update_solution(args)
 
-        self.res = [1e16]
-        iit = 0
-        y_step_factor = 1
-        Q_hist = {}
+        iit = 0; nit = 30; alpha = 0.1; beta = 0.5;# set Newton method parameters
+        self.assemble_structures(block_list); self.form_rhs_NR(yaf, ydotam); self.form_matrix_NR(dt)
+        res_old = np.max(np.abs(copy.deepcopy(self.res))); res_trial = copy.deepcopy(res_old)
+        dy = scipy.sparse.linalg.spsolve(csr_matrix(self.M), self.res)
 
-        np.set_printoptions(precision=3)
-        y_step_factor = 1
         while np.max(np.abs(self.res)) > 5e-4 and iit < nit:
-            # update solution-dependent blocks
-            #y_step_factor = 1
-            if np.sqrt(iit)%3 == 0 and iit>2:
-                y_step_factor = y_step_factor/2
-                print("Decreasing Newton step size.")
-                pdb.set_trace()
-
-            for b in block_list:
-                b.update_solution(args)
-                if iit > 4:
-                    if b.type == "Junction":
-                        Q = b.unpack_params(args)[2]
-                        A = b.unpack_params(args)[3]
-                        th = b.unpack_params(args)[4]
-                        print("Newton iteration ", iit, ", timestep", t , ", block name: ", b.name , ". Q: " , Q)
-                        # print("A: ", A)
-                        # print("th: ", th)
-                        dC_numerical, dC_analytical = b.form_derivative_num(args, 1e-4)
-                        if iit > 10:
-                            pdb.set_trace()
-
-
-                # if iit > 10:
-                #     if b.type == "Junction":
-                #         if b.name not in Q_hist:
-                #             Q_hist.update({b.name: [np.zeros((5,)), np.zeros((5,)), np.zeros((5,)), np.zeros((5,))]})
-                #         #pdb.set_trace()
-                #         Q = b.unpack_params(args)[2]
-                #         Q_hist.update({b.name: [Q] + Q_hist[b.name][:-1]})
-                #         if np.all(Q_hist[b.name][0] == Q_hist[b.name][2]):
-                #             y_step_factor = y_step_factor/2
-                #             print("Oscillation detected.  Decreasing Newton step size.")
-                #             pdb.set_trace()
-
-
-            # update residual and jacobian
-            self.assemble_structures(block_list)
-            self.form_rhs_NR(yaf, ydotam)
-            self.form_matrix_NR(dt)
-
-            # perform finite-difference check of jacobian if requested
-            if args['check_jacobian']:
-                if args['Time'] > dt:
-                    self.check_jacobian(copy.deepcopy(self.res), ydotam, args, block_list)
-
-            # solve for Newton increment
-            dy = scipy.sparse.linalg.spsolve(csr_matrix(self.M), self.res) * y_step_factor
-            # pdb.set_trace()
-            # dy = scipy.sparse.linalg.spsolve(csr_matrix(J_numerical), self.res)
-            # update solution
-            yaf += dy
-            ydotam += self.alpha_m * dy / (self.alpha_f * self.gamma * dt)
-
+            # Backtracking Algorithm
+            # if iit == 0:
+            #     y_new= yaf + dy
+            # else:
+            ss = 2
+            while np.max(np.abs(res_trial)) >= (1-alpha*ss)*np.max(np.abs(res_old)):
+                ss = ss*beta
+                if ss < 1:  print(f"Backtracking.  Current residual {res_old}, trial residual {res_trial}")
+                y_trial = yaf + ss * dy
+                ydotam_trial = ydotam + self.alpha_m * (ss*dy) / (self.alpha_f * self.gamma * dt)
+                res_trial = self.take_newt_step(y_trial, ydotam_trial, args, block_list, dt)
+                #pdb.set_trace()
+            res_old = res_trial
+                #if iit > 3: pdb.set_trace()
+            yaf = copy.deepcopy(y_trial); ydotam = copy.deepcopy(ydotam_trial); res_old = copy.deepcopy(res_trial)
+            dy = scipy.sparse.linalg.spsolve(csr_matrix(self.M), self.res)
             if np.any(np.isnan(self.res)):
                 raise RuntimeError('Solution nan')
-
-            args['Solution'] = yaf
             iit += 1
-            print(iit, " Newton iterations.  Current residual: " , np.max(np.abs(self.res)))
-            #pdb.set_trace()
-        nit = 30
+            print(iit, " Newton iterations. Current residual: " , np.max(np.abs(self.res)))
+
         if iit >= nit:
             print("Max NR iterations (" ,iit,") reached at time: ", t, " , max error: ", max(abs(self.res)))
             curr_y = y + (yaf - y) / self.alpha_f

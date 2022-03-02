@@ -445,8 +445,8 @@ class UNIFIED0DJunction(Junction):
                 for j in range(num_branches): # loop over velocity derivatives
                     dP_derivs[2*j + 1] = -1*ddP_dU_vec[j] * dC_sign[j]
             elif i in inlet_indices:
-                dP_derivs[2*max_inlet + 1] = - self.rho * (Q[max_inlet]/areas[max_inlet])* (1/areas[max_inlet])
-                dP_derivs[2*i + 1] = self.rho * (Q[i]/areas[i])* (1/areas[i])
+                dP_derivs[2*max_inlet + 1] = - self.rho * (Q[max_inlet]/areas[max_inlet])* (1/areas[max_inlet]) * dC_sign[max_inlet]
+                dP_derivs[2*i + 1] = self.rho * (Q[i]/areas[i])* (1/areas[i]) * dC_sign[i]
             dC.append(tuple(dP_derivs))
         self.mat["dC"] = dC # set c vector
 
