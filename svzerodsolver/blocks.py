@@ -34,7 +34,7 @@ import pdb
 import numpy as np
 from collections import defaultdict
 #from junction_loss_coeff import junction_loss_coeff
-from .junction_loss_coeff_tf import junction_loss_coeff_tf
+from .junction_loss_coeff_tf_3_18 import junction_loss_coeff_tf
 import tensorflow as tf
 import time
 
@@ -45,7 +45,6 @@ class LPNVariable:
         # Two generic units accepted : SI, cgs. Conversion for special values applied
         self.units = units
         self.name = name
-
 
 class PressureVariable(LPNVariable):
 
@@ -76,7 +75,6 @@ class PressureVariable(LPNVariable):
         else:
             raise Exception("Units " + self.units + " not recognized")
 
-
 class FlowVariable(LPNVariable):
 
     def __init__(self, value, units='cgs', name='NoNameFlow'):
@@ -106,7 +104,6 @@ class FlowVariable(LPNVariable):
         else:
             raise Exception("Units " + self.units + " not recognized")
 
-
 class wire:
     """
     Wires connect circuit elements and junctions
@@ -124,7 +121,6 @@ class wire:
             raise Exception('Connecting elements to wire should be passed as a 2-tuple')
         self.connecting_elements = connecting_elements
         self.LPN_solution_ids = [None] * 2
-
 
 class LPNBlock:
     def __init__(self, connecting_block_list=None, name="NoName", flow_directions=[]):
@@ -300,8 +296,8 @@ class UNIFIED0DJunction(Junction):
         small_Q = np.reshape(np.asarray(np.where(np.abs(Q) <= 0.1)),(-1,))
         # if not np.all(Q==0):
         #     Q[small_Q] = 0
-        angles = copy.deepcopy(self.junction_parameters["angles"]) # load angles
-        return curr_y, wire_dict, Q, areas, angles, small_Q
+        tangents = copy.deepcopy(self.junction_parameters["tangents"]) # load angles
+        return curr_y, wire_dict, Q, areas, tangents, small_Q
 
     def check_rep_Q(self, Q):
         Q_frozen = copy.deepcopy(Q)
@@ -367,11 +363,22 @@ class UNIFIED0DJunction(Junction):
             self.mat['F'].append(tuple(F_row)) # append row to F matrix
         self.F_add_continuity_row() # add mass conservation row
 
-    def configure_angles(self, angles, max_inlet, num_branches):
-        angles.insert(0,0) # add in the angle for the input file "presumed inlet" (first entry)
-        angle_shift = np.pi - angles[max_inlet] # find shift to set first inlet angle to pi
+    def get_angle_difference(self, tangent1, tangent2):
+        angle_difference = np.arccos(np.sum(np.multiply(
+                            np.asarray(tangent1),
+                            np.asarray(tangent2)), axis=0))
+        return angle_difference
+
+    def configure_angles(self, tangents, Q, max_inlet, num_branches):
+        angles = []
         for i in range(num_branches): # loop over all angles
-            angles[i] = angles[i] + angle_shift # shift all junction angles
+            if i == max_inlet:
+                 angles.append(np.pi)
+            else:
+                if Q[i] < 0:
+                    angles.append(self.get_angle_difference(tangents[max_inlet], tangents[i]))
+                else:
+                    angles.append(np.pi + self.get_angle_difference(tangents[max_inlet], tangents[i]))
         assert len(angles) == num_branches, 'One angle should be provided for each branch'
         #print(angles)
         return angles
@@ -385,14 +392,16 @@ class UNIFIED0DJunction(Junction):
           U_tensor = tf.divide(Q_tensor, areas_tensor)
           C_outlets, outlets = junction_loss_coeff_tf(U_tensor, areas_tensor, angles_tensor) # run Unified0D junction loss coefficient function
           dP_unified0d_outlets = (rho*tf.multiply(
-              C_outlets, tf.square(tf.boolean_mask(U_tensor, outlets))) + 0.5*rho*tf.subtract(
-              tf.square(tf.slice(U_tensor, begin = [max_inlet], size = [1])), tf.square(tf.boolean_mask(U_tensor, outlets)))) # compute pressure loss according to the unified 0d model
+              C_outlets, tf.square(tf.boolean_mask(U_tensor, outlets))))
+          # dP_unified0d_outlets = (rho*tf.multiply(
+          #     C_outlets, tf.square(tf.boolean_mask(U_tensor, outlets))) + 0.5*rho*tf.subtract(
+          #     tf.square(tf.slice(U_tensor, begin = [max_inlet], size = [1])), tf.square(tf.boolean_mask(U_tensor, outlets)))) # compute pressure loss according to the unified 0d model
         ddP_dU_outlets = tape.jacobian(dP_unified0d_outlets, Q_tensor) # get derivatives of pressure loss coeff wrt. U_tensor
         return dP_unified0d_outlets, ddP_dU_outlets, outlets
 
     def apply_unified0d(self, args, Q, areas, angles):
         inlet_indices, max_inlet, num_inlets, outlet_indices, num_outlets, num_branches = self.classify_branches(Q)
-        angles = self.configure_angles(copy.deepcopy(angles), max_inlet, num_branches) # configure angles for unified0d
+        angles = self.configure_angles(copy.deepcopy(angles), Q, max_inlet, num_branches) # configure angles for unified0d
         Q_tensor = tf.Variable(tf.convert_to_tensor(Q)) # convert Q to a tensor
         areas_tensor = tf.convert_to_tensor(areas, dtype="double") # convert areas to a tensor
         angles_tensor = tf.convert_to_tensor(angles, dtype="double") # convert angles to a tensor
@@ -422,8 +431,8 @@ class UNIFIED0DJunction(Junction):
         for i in range(num_branches):
           if i in outlet_indices:
             C_vec[i] =  -1*dP_unified0d_outlets[outlet_indices.index(i)]
-          elif i != max_inlet:
-            C_vec[i] = - 0.5 * self.rho * (np.square(Q[max_inlet]/areas[max_inlet]) - np.square(Q[i]/areas[i]))
+          # elif i != max_inlet:
+          #   C_vec[i] = - 0.5 * self.rho * (np.square(Q[max_inlet]/areas[max_inlet]) - np.square(Q[i]/areas[i]))
         C_vec.pop(max_inlet) # remove dominant inlet entry
         C_vec = C_vec + [0] # mass conservation
         self.mat["C"] = C_vec # set c vector
@@ -444,9 +453,9 @@ class UNIFIED0DJunction(Junction):
                 ddP_dU_vec = ddP_dU_outlets[outlet_indices.index(i),:]
                 for j in range(num_branches): # loop over velocity derivatives
                     dP_derivs[2*j + 1] = -1*ddP_dU_vec[j] * dC_sign[j]
-            elif i in inlet_indices:
-                dP_derivs[2*max_inlet + 1] = - self.rho * (Q[max_inlet]/areas[max_inlet])* (1/areas[max_inlet]) * dC_sign[max_inlet]
-                dP_derivs[2*i + 1] = self.rho * (Q[i]/areas[i])* (1/areas[i]) * dC_sign[i]
+            # elif i in inlet_indices:
+            #     dP_derivs[2*max_inlet + 1] = - self.rho * (Q[max_inlet]/areas[max_inlet])* (1/areas[max_inlet]) * dC_sign[max_inlet]
+            #     dP_derivs[2*i + 1] = self.rho * (Q[i]/areas[i])* (1/areas[i]) * dC_sign[i]
             dC.append(tuple(dP_derivs))
         self.mat["dC"] = dC # set c vector
 
@@ -462,7 +471,6 @@ class UNIFIED0DJunction(Junction):
             self.set_C(dP_outlets, Q_frozen, areas) # set C vector
             self.set_dC(ddP_dU_outlets, Q_frozen, Q_freeze_ind, areas) # set dC matrix
             #pdb.set_trace()
-
 
 class DNNJunction(Junction):
 
@@ -623,8 +631,6 @@ class DNNJunction(Junction):
             self.set_C(dP_outlets, U) # set C vector
             self.set_dC(ddP_dU_outlets, U, areas) # set dC matrix
             #pdb.set_trace()
-
-
 class BloodVessel(LPNBlock):
     """
     Stenosis:
@@ -653,7 +659,6 @@ class BloodVessel(LPNBlock):
         self.mat['F'] = [(1.0, -1.0 * self.stenosis_coefficient * np.abs(Q_in) - self.R, -1.0, 0), (0, 1.0, 0, -1.0)]
         self.mat['dF'] = [(0, -1.0 * self.stenosis_coefficient * np.abs(Q_in), 0, 0), (0,) * 4]
 
-
 class UnsteadyResistanceWithDistalPressure(LPNBlock):
     def __init__(self, Rfunc, Pref_func, connecting_block_list=None, name="NoNameUnsteadyResistanceWithDistalPressure",
                  flow_directions=None):
@@ -670,7 +675,6 @@ class UnsteadyResistanceWithDistalPressure(LPNBlock):
         t = args['Time']
         self.mat['F'] = [(1., -1.0 * self.Rfunc(t))]
         self.mat['C'] = [-1.0 * self.Pref_func(t)]
-
 
 class UnsteadyPressureRef(LPNBlock):
     """
@@ -690,7 +694,6 @@ class UnsteadyPressureRef(LPNBlock):
     def update_constant(self):
         self.mat['F'] = [(1., 0.)]
 
-
 class UnsteadyFlowRef(LPNBlock):
     """
     Flow reference
@@ -708,7 +711,6 @@ class UnsteadyFlowRef(LPNBlock):
 
     def update_constant(self):
         self.mat['F'] = [(0, 1.)]
-
 
 class UnsteadyRCRBlockWithDistalPressure(LPNBlock):
     """
@@ -735,7 +737,6 @@ class UnsteadyRCRBlockWithDistalPressure(LPNBlock):
         self.mat['E'] = [(0, 0, 0), (0, 0, -1.0 * self.Rd_func(t) * self.C_func(t))]
         self.mat['F'] = [(1., -self.Rp_func(t), -1.), (0.0, self.Rd_func(t), -1.0)]
         self.mat['C'] = [0, self.Pref_func(t)]
-
 
 class OpenLoopCoronaryWithDistalPressureBlock(LPNBlock):
     """

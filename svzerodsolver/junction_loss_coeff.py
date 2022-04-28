@@ -13,6 +13,8 @@ Outputs: C, K --> numpy arrays of the C and K loss coefficients
 """
 import autograd.numpy as np
 import pdb
+
+
 def wrap_to_pi(angle):
     # function to map angles to a magnitude less than pi
     #pdb.set_trace()
@@ -36,6 +38,7 @@ wrap_to_2pi = np.vectorize(wrap_to_2pi)
 
 def junction_loss_coeff(U, A, theta):
     theta = wrap_to_pi(theta)
+    print(f"theta4 {theta}")
     flow_rate = np.multiply(U, A) # flow rate
     inlets = (flow_rate >= 0).astype(bool) # identify inlets
     outlets = (flow_rate < 0).astype(bool) # identify outlets
@@ -51,14 +54,16 @@ def junction_loss_coeff(U, A, theta):
         pseudo_outlet_angle += np.pi # enforce that the pseudo-outlet angle be in the second quadrant
 
     theta = wrap_to_pi(theta - pseudo_outlet_angle) # set the average outlet angle to zero
+    print(f"theta3 {theta}")
     if np.mean(np.multiply(
             flow_rate[inlets], np.sin(theta[inlets]))) < 0:
         theta = -theta # enforce that the majority of flow comes from positive angles
+    print(f"theta2 {theta}")
     pseudo_inlet_angle = np.arctan2(
             np.sum(np.multiply(flow_rate[inlets], np.sin(np.abs(theta[inlets])))),
             np.sum(np.multiply(flow_rate[inlets], np.cos(np.abs(theta[inlets]))))
                     ) # initialize pseudo-inlet angle
-
+    print(f"pseudo_inlet_angle {pseudo_inlet_angle}")
     # Calculated Junction Parameters ------------------------------------
 
     flow_rate_total = np.sum(flow_rate[inlets]) # total flow rate
@@ -74,14 +79,22 @@ def junction_loss_coeff(U, A, theta):
             np.sum(np.multiply(U[inlets], flow_rate[inlets]))/flow_rate_total)) # total_pseudo_area (A')
     area_ratio = np.divide(total_pseudo_area, A[outlets]) # area ratio (psi)
     phi = wrap_to_2pi(np.subtract(pseudo_inlet_angle, theta[outlets])) # angle deviation (phi)
+    print(f"flow_ratio {flow_ratio}")
+    print(f"energy_transfer_factor {energy_transfer_factor}")
+    print(f"total_pseudo_area {total_pseudo_area}")
+    print(f"area_ratio {area_ratio}")
+    print(f"phi {phi}")
+    print(f"theta {theta}")
     # Calculate Loss Coefficients ---------------------------------------
 
     C = np.zeros((np.size(U),))
-    print("flow ratio: ", flow_ratio)
+
+    #print("flow ratio: ", flow_ratio)
     C[outlets] = np.multiply(
             (1-np.exp(-flow_ratio/0.02)),
             np.subtract(1, np.divide(np.cos(0.75*(np.subtract(np.pi, phi))),
                                      np.multiply(area_ratio, flow_ratio)))) # compute C
+    print(f"C {C}")
     K = np.NaN
     if np.size(U) <= 3: # check that there are three or fewer branches
         if np.sum(outlets) == 1: # check for converging flow

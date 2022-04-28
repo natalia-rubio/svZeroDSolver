@@ -36,6 +36,12 @@ import scipy.sparse.linalg
 from scipy.sparse import csr_matrix
 import pdb
 import copy
+import sys
+sys.path.insert(1, '../svzerodsolver')
+from timeout import *
+from hanging_threads import start_monitoring
+start_monitoring(seconds_frozen=10, test_interval=100)
+print("updated")
 
 try:
     import matplotlib.pyplot as plt
@@ -178,6 +184,7 @@ class GenAlpha:
     def visualize_solution(y):
         pass
 
+    @timeout(20, "timed out.")
     def take_newt_step(self, y_new, ydotam_new, args, block_list, dt):
         args["Solution"] = y_new
         for b in block_list:
@@ -218,13 +225,25 @@ class GenAlpha:
             #     y_new= yaf + dy
             # else:
             ss = 2
+            if iit > 20: pdb.set_trace()
             while np.max(np.abs(res_trial)) >= (1-alpha*ss)*np.max(np.abs(res_old)):
                 ss = ss*beta
-                if ss < 1:  print(f"Backtracking.  Current residual {res_old}, trial residual {res_trial}")
+                if ss < 1:  print(f"Backtracking.  Step size {ss}.  Current residual {res_old}, trial residual {res_trial}",flush=True)
+                if ss < 1e-5:
+                    pdb.set_trace()
+                    print("Inspecting Junctions")
+                    for b in block_list:
+                        if str(type(b)) == "<class 'svzerodsolver.blocks.UNIFIED0DJunction'>":
+                            curr_y, wire_dict, Q, areas, angles, small_Q = b.unpack_params(args)
+                            inlet_indices, max_inlet, num_inlets, outlet_indices, num_outlets, num_branches = b.classify_branches(Q)
+                            print(f"block name: {b.name} \nQ: {Q.flatten()}\n max inlet: {max_inlet}, inlet indices: {inlet_indices}, outlet indices: {outlet_indices}")
+                            pdb.set_trace()
                 y_trial = yaf + ss * dy
                 ydotam_trial = ydotam + self.alpha_m * (ss*dy) / (self.alpha_f * self.gamma * dt)
-                res_trial = self.take_newt_step(y_trial, ydotam_trial, args, block_list, dt)
-                #pdb.set_trace()
+                try:
+                    res_trial = self.take_newt_step(y_trial, ydotam_trial, args, block_list, dt)
+                except:
+                    pdb.set_trace()
             res_old = res_trial
                 #if iit > 3: pdb.set_trace()
             yaf = copy.deepcopy(y_trial); ydotam = copy.deepcopy(ydotam_trial); res_old = copy.deepcopy(res_trial)
