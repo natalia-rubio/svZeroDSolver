@@ -277,6 +277,91 @@ class Junction(LPNBlock):
         tmp += (self.flow_directions[-1],)
         self.mat['F'].append(tmp)
 
+class STATICPJunction(Junction):
+
+    def __init__(self, junction_parameters, connecting_block_list=None, name="NoNameJunction", flow_directions=None):
+        Junction.__init__(self, connecting_block_list, name=name, flow_directions=flow_directions)
+        self.flow_directions = flow_directions
+        self.junction_parameters = junction_parameters
+        self.rep_Q_inds = {}
+        self.rho = 1.06
+        for Q_ind in range(len(self.flow_directions)):
+            self.rep_Q_inds.update({Q_ind:[]})
+
+    def unpack_params(self, args):
+        curr_y = args['Solution']  # the current solution for all unknowns in our 0D model
+        wire_dict = args['Wire dictionary'] # connectivity dictionary
+        areas = self.junction_parameters["areas"] # load areas
+        Q = np.abs(np.asarray([curr_y[wire_dict[self.connecting_wires_list[i]].LPN_solution_ids[1]] for i in range(len(self.flow_directions))])) # calculate velocity in each
+        V = np.divide(Q,areas)
+        return curr_y, wire_dict, Q, areas
+
+
+    def set_F(self):
+        self.mat['F'] = [(1.,) + (0,) * (2 * i + 1) + (-1,) + (0,) * (2 * self.num_connections - 2 * i - 3) for i in
+                         range(self.num_connections - 1)] # copy-pasted from normal junction
+        tmp = (0,)
+        for d in self.flow_directions[:-1]:
+            tmp += (d,)
+            tmp += (0,)
+        tmp += (self.flow_directions[-1],)
+        self.mat['F'].append(tmp)
+
+
+    @tf.function
+    def static_p_tf(self, Q_tf, areas_tf):
+        rho = tf.constant(1.06, dtype=tf.float32) # density of blood
+        with tf.GradientTape(watch_accessed_variables=False, persistent=False) as tape:
+          tape.watch(Q_tf) # track operations applied to Q_tensor
+          V = tf.math.divide(Q_tf,areas_tf)
+          C = tf.multiply(rho, tf.multiply(tf.constant(0.5, dtype=tf.float32), tf.subtract(
+          tf.math.square(V), tf.math.square(tf.slice(V, begin = [0], size = [1]))
+          )))
+
+        dC_dQ = tape.jacobian(C, Q_tf) # get derivatives of pressure loss coeff wrt. U_tensor
+        return C, dC_dQ
+
+    def set_C(self, args, Q, areas):
+
+        Q_tf = tf.Variable(tf.convert_to_tensor(Q, dtype=tf.float32)) # convert Q to a tensor
+        areas_tf = tf.convert_to_tensor(areas, dtype=tf.float32) # convert areas to a tensor
+
+        branch_config = Q.size
+        if branch_config in args["tf_graph_dict"]:
+          unified_tf_concrete = args["tf_graph_dict"][branch_config]
+        else:
+          unified_tf_concrete = self.static_p_tf.get_concrete_function(Q_tf, areas_tf)
+          args["tf_graph_dict"].update({branch_config: unified_tf_concrete})
+          print("Adding tf.concrete_function for junction with "+ str(branch_config) + " branches.")
+        C_tf, dC_dQ_tf = unified_tf_concrete(Q_tf, areas_tf)
+
+        self.mat["C"] = list(C_tf.numpy()[1:]) + [0]
+
+        dC_dQ_np = dC_dQ_tf.numpy()
+        #pdb.set_trace()
+        dC_dsol = []
+        for i in range(len(Q)):
+            deriv_list = []
+            for j in range(len(Q)): # loop over velocity derivatives
+                deriv_list.append(0);deriv_list.append(dC_dQ_np[i,j])
+            dC_dsol.append(tuple(deriv_list))
+        dC_dsol.append(tuple([0*i for i in deriv_list]))
+        self.mat["dC"] = dC_dsol[1:]
+        return
+
+
+    def update_solution(self, args):
+        curr_y, wire_dict, Q, areas = self.unpack_params(args)
+
+        if np.sum(np.asarray(Q)!=0) == 0: # if all velocities are 0, treat as normal junction (copy-pasted from normal junction code)
+            self.set_F() # set F matrix and c vector for zero flow case
+            print("all zeros")
+        else: # otherwise apply Unified0D model
+            self.set_F() # set F matrix
+            self.set_C(args, Q, areas)
+            #pdb.set_trace()
+
+
 class UNIFIED0DJunction(Junction):
 
     def __init__(self, junction_parameters, connecting_block_list=None, name="NoNameJunction", flow_directions=None):
