@@ -33,6 +33,7 @@
 import numpy as np
 import scipy
 import scipy.sparse.linalg
+from scipy.optimize import minimize
 from scipy.sparse import csr_matrix
 import pdb
 import copy
@@ -214,7 +215,7 @@ class GenAlpha:
             b.update_time(args)
             b.update_solution(args)
 
-        iit = 0; nit = 30; alpha = 0.1; beta = 0.5;# set Newton method parameters
+        iit = 0; nit = 30; alpha = 0; beta = 0.5;# set Newton method parameters
         self.assemble_structures(block_list); self.form_rhs_NR(yaf, ydotam); self.form_matrix_NR(dt)
         res_old = np.max(np.abs(copy.deepcopy(self.res))); res_trial = copy.deepcopy(res_old)
         dy = scipy.sparse.linalg.spsolve(csr_matrix(self.M), self.res)
@@ -226,8 +227,10 @@ class GenAlpha:
             # else:
             ss = 2
             if iit > 10 and ss < 1e-7:
+                print("Using scipy optimizer.")
+                minimize
                 pdb.set_trace()
-                dy = np.random.rand(dy.shape)
+                #dy = np.random.rand(dy.shape)
             while np.max(np.abs(res_trial)) >= (1-alpha*ss)*np.max(np.abs(res_old)):
                 ss = ss*beta
                 if ss < 1:  print(f"Backtracking.  Step size {ss}.  Current residual {res_old}, trial residual {res_trial}",flush=True)

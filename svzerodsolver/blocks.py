@@ -292,7 +292,7 @@ class STATICPJunction(Junction):
         curr_y = args['Solution']  # the current solution for all unknowns in our 0D model
         wire_dict = args['Wire dictionary'] # connectivity dictionary
         areas = self.junction_parameters["areas"] # load areas
-        Q = np.abs(np.asarray([curr_y[wire_dict[self.connecting_wires_list[i]].LPN_solution_ids[1]] for i in range(len(self.flow_directions))])) # calculate velocity in each
+        Q = np.asarray([curr_y[wire_dict[self.connecting_wires_list[i]].LPN_solution_ids[1]] for i in range(len(self.flow_directions))]) # calculate velocity in each
         V = np.divide(Q,areas)
         return curr_y, wire_dict, Q, areas
 
@@ -315,8 +315,8 @@ class STATICPJunction(Junction):
           tape.watch(Q_tf) # track operations applied to Q_tensor
           V = tf.math.divide(Q_tf,areas_tf)
           C = tf.multiply(rho, tf.multiply(tf.constant(0.5, dtype=tf.float32), tf.subtract(
-          tf.math.square(V), tf.math.square(tf.slice(V, begin = [0], size = [1]))
-          )))
+           tf.math.square(tf.slice(V, begin = [0], size = [1])), tf.math.square(V))
+          ))
 
         dC_dQ = tape.jacobian(C, Q_tf) # get derivatives of pressure loss coeff wrt. U_tensor
         return C, dC_dQ
