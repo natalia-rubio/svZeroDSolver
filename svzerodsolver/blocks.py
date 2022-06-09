@@ -315,7 +315,7 @@ class STATICPJunction(Junction):
           tape.watch(Q_tf) # track operations applied to Q_tensor
           V = tf.math.divide(Q_tf,areas_tf)
           C = tf.multiply(rho, tf.multiply(tf.constant(0.5, dtype=tf.float32), tf.subtract(
-           tf.math.square(tf.slice(V, begin = [0], size = [1])), tf.math.square(V))
+           tf.math.square(tf.slice(V, begin = [0], size = [1])), tf.math.square(tf.slice(V, begin = [0], size = [1])))
           ))
 
         dC_dQ = tape.jacobian(C, Q_tf) # get derivatives of pressure loss coeff wrt. U_tensor
@@ -347,6 +347,7 @@ class STATICPJunction(Junction):
             dC_dsol.append(tuple(deriv_list))
         dC_dsol.append(tuple([0*i for i in deriv_list]))
         self.mat["dC"] = dC_dsol[1:]
+        pdb.set_trace()
         return
 
 
