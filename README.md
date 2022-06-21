@@ -26,49 +26,63 @@ svZeroDSolver currently supports the following vascular 0D modeling options and 
 - Coronary
 - Flow
 
+### Installation
 
-### Prerequisites
+svZeroDSolver and all its dependencies can be installed easily via pip.
 
-The following software is required:
-
-- Python 3
-
-The required Python packages are listet in `requirements.txt`
-
-### Execution
-
-The solver can be executed three ways.
-
-1) Execute from the top level Git repository using
-
-~~~
-python -m svzerodsolver.solver SOLVER_INPUT_FILE 
+~~~bash
+pip install git+https://github.com/SimVascular/svZeroDSolver.git
 ~~~
 
-2) Setting the `PYTHONPATH` environent variable
+#### For Contributers
 
-The solver can be executed from any directory by setting the `PYTHONPATH` environent variable 
-to the top level Git repository 
+The following guide provides all necessary steps to install your local
+svZeroDSolver repository via pip in editable mode to allow for local code changes
+to reflect in the package. 
 
-~~~
-export PYTHONPATH=$PYTHONPATH:/$HOME/svZeroDSolver/
-~~~
+If you are contributing to svZeroDSolver, it is highly recommended to use a virtual
+environment like [Miniconda](https://docs.conda.io/en/latest/miniconda.html).
+After installing Miniconda you can create a new environment and enter it using:
 
-3) Installing the `svzerodsolver` Python package 
-
-The `svzerodsolver` Python package is installed using the `setup.py` script
-
-~~~
-python setup.py install
+~~~bash
+conda create -n zerodsolver python=3.9
+conda activate zerodsolver
 ~~~
 
-### Solver options 
+After that, enter the repository folder and install the svZeroDSolver
+**with development related dependencies** using:
 
-The options supported by the solver are listed using
+~~~bash
+pip install -e .[dev]
+~~~
 
+*If you are using the `zsh` shell, enter: `pip install -e ".[dev]"`*
+
+### Usage
+
+#### Command line
+
+To run svZeroDSolver form the command line, run:
+
+~~~bash
+zerod SOLVER_INPUT_FILE 
 ~~~
-python -m svzerodsolver.solver --help
+
+For more information about command line options, enter:
+
+~~~bash
+zerod --help
 ~~~
+
+#### As a python module
+
+~~~python
+import svzerodsolver
+svzerodsolver.solver.set_up_and_run_0d_simulation('input.json')
+~~~
+
+This variant enables running svZeroDSolver within a user-defined Python code
+(e.g. parameter optimization, uncertainty quantification)
 
 
 

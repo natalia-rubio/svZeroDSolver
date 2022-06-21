@@ -106,7 +106,6 @@ try:
 except ImportError:
     print("\njson not found.")
 
-np.set_printoptions(threshold=sys.maxsize)
 import importlib
 import argparse
 from collections import defaultdict
@@ -224,10 +223,20 @@ def create_junction_blocks(parameters, custom_0d_elements_arguments):
                 junction_blocks[junction_name] = ntwku.UNIFIED0DJunction(junction_parameters, connecting_block_list = connecting_block_list, name = junction_name, flow_directions = flow_directions)
             elif junction["junction_type"] == "STATICP_JUNCTION":
                 junction_blocks[junction_name] = ntwku.STATICPJunction(junction_parameters, connecting_block_list = connecting_block_list, name = junction_name, flow_directions = flow_directions)
-
-            else: # this is a custom, user-defined junction block
+            elif junction["junction_type"] in ["NORMAL_JUNCTION", "internal_junction"]:
+                junction_blocks[junction_name] = ntwku.InternalJunction(connecting_block_list=connecting_block_list,
+                                                                        name=junction_name,
+                                                                        flow_directions=flow_directions)
+            elif junction["junction_type"] == "BloodVesselJunction":
+                junction_blocks[junction_name] = ntwku.BloodVesselJunction(junction,
+                                                                           connecting_block_list=connecting_block_list,
+                                                                           name=junction_name,
+                                                                           flow_directions=flow_directions)
+            elif junction["junction_type"] == "CUSTOM_JUNCTION": # this is a custom, user-defined junction block
                 custom_0d_elements_arguments.junction_args[junction_name].update({"connecting_block_list" : connecting_block_list, "flow_directions" : flow_directions, "name" : junction_name})
                 junction_blocks[junction_name] = create_custom_element(junction["junction_type"], custom_0d_elements_arguments.junction_args[junction_name])
+            else:
+                raise ValueError('Unknown junction type ' + junction["junction_type"])
         else:
             message = "Error. Junction block, " + junction_name + ", must have at least 1 inlet connection and 1 outlet connection."
             raise RuntimeError(message)
@@ -391,7 +400,7 @@ def create_outlet_bc_blocks(parameters, custom_0d_elements_arguments):
             Ca = vessel_id_to_boundary_condition_map[vessel_id]["outlet"]["bc_values"]["Ca"]
             Cc = vessel_id_to_boundary_condition_map[vessel_id]["outlet"]["bc_values"]["Cc"]
             Rv1 = vessel_id_to_boundary_condition_map[vessel_id]["outlet"]["bc_values"]["Rv1"]
-            Pv_distal_pressure = vessel_id_to_boundary_condition_map[vessel_id]["outlet"]["bc_values"]["Pv"]
+            Pv_distal_pressure = vessel_id_to_boundary_condition_map[vessel_id]["outlet"]["bc_values"]["P_v"]
 
             time_of_intramyocardial_pressure = vessel_id_to_boundary_condition_map[vessel_id]["outlet"]["bc_values"]["t"]
 
@@ -1146,7 +1155,9 @@ def run_simulation(args):
                                 )
 
 
-def main(args):
+def main():
+
+    args = sys.argv[1:]
 
     parser = create_parser()
 
@@ -1155,4 +1166,4 @@ def main(args):
     run_simulation(args)
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    main(main)

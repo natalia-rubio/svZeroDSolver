@@ -35,7 +35,6 @@ import scipy
 import scipy.sparse.linalg
 from scipy.optimize import minimize
 from scipy.sparse import csr_matrix
-import pdb
 import copy
 import sys
 sys.path.insert(1, '../svzerodsolver')
@@ -59,6 +58,8 @@ class GenAlpha:
         self.alpha_f = 1.0 / (1.0 + rho)
         self.gamma = 0.5 + self.alpha_m - self.alpha_f
 
+        self.fac = self.alpha_m / (self.alpha_f * self.gamma)
+
         # problem dimension
         self.n = y.shape[0]
 
@@ -66,60 +67,48 @@ class GenAlpha:
         self.mat = {}
 
         # jacobian matrix
-        self.M = []
+        self.M = np.zeros((self.n, self.n))
+        self.sparse = False
+        if self.n > 800:
+            self.solver = scipy.sparse.linalg.spsolve
+        else:
+            self.solver = np.linalg.solve
 
         # residual vector
-        self.res = []
+        self.res = np.zeros(self.n)
 
-        # initialize matrices in self.mat
-        self.initialize_solution_matrices()
-
-    def initialize_solution_matrices(self):
-        """
-        Create empty dense matrices and vectors
-        """
-        mats = ['E', 'F', 'dE', 'dF', 'dC']
-        vecs = ['C']
-
-        for m in mats:
+        self.mats = ['E', 'F', 'dE', 'dF', 'dC']
+        self.vecs = ['C']
+        for m in self.mats:
             self.mat[m] = np.zeros((self.n, self.n))
-        for v in vecs:
+        for v in self.vecs:
             self.mat[v] = np.zeros(self.n)
 
-        # Natalia Addition
 
     def assemble_structures(self, block_list):
         """
         Assemble block matrices into global matrices
         """
         for bl in block_list:
-            for n in self.mat.keys():
-                # vectors
-                if len(self.mat[n].shape) == 1:
-                    for i in range(len(bl.mat[n])):
-                        self.mat[n][bl.global_row_id[i]] = bl.mat[n][i]
-                # matrices
-                else:
-                    for i in range(len(bl.mat[n])):
-                        for j in range(len(bl.mat[n][i])):
-                          try:
-                            self.mat[n][bl.global_row_id[i], bl.global_col_id[j]] = bl.mat[n][i][j]
-                          except:
-                            pdb.set_trace()
 
-    def form_matrix_NR(self, dt):
+            while bl.vecs_to_assemble:
+                n = bl.vecs_to_assemble.pop()
+                self.mat[n][bl.global_row_id] = bl.vec[n]
+            while bl.mats_to_assemble:
+                n = bl.mats_to_assemble.pop()
+                self.mat[n][bl.flat_row_ids, bl.flat_col_ids] = bl.mat[n].ravel()
+
+    def form_matrix_NR(self, invdt):
         """
         Create Jacobian matrix
         """
-        self.M = (self.mat['F'] + (self.mat['dE'] + self.mat['dF'] + self.mat['dC'] + self.mat['E'] * self.alpha_m / (
-                    self.alpha_f * self.gamma * dt)))
+        self.M = (self.mat['F'] + (self.mat['dE'] + self.mat['dF'] + self.mat['dC'] + self.mat['E'] * self.fac * invdt))
 
     def form_rhs_NR(self, y, ydot):
         """
         Create residual vector
         """
-        self.res = - np.dot(self.mat['E'], ydot) - np.dot(self.mat['F'], y) - self.mat['C']
-        # return - csr_matrix(E).dot(ydot) - csr_matrix(F).dot(y) - C
+        self.res = - self.mat['E'].dot(ydot) - self.mat['F'].dot(y) - self.mat['C']
 
     def form_matrix_NR_numerical(self, res_i, ydotam, args, block_list, epsilon):
         """
@@ -140,19 +129,17 @@ class GenAlpha:
 
             for b in block_list:
                 b.update_solution(args)
-            self.initialize_solution_matrices()
             self.assemble_structures(block_list)
             self.form_rhs_NR(args['Solution'], ydotam)
 
             # use forward finite differences (multiply by -1 b/c form_rhs_NR creates the negative residual)
             J_numerical[:, jj] = (self.res - res_i) / yaf_step_size[jj] * -1
-        #pdb.set_trace()
+
         # restore original quantities
         args['Solution'] = yaf_original
 
         for b in block_list:
             b.update_solution(args)
-        self.initialize_solution_matrices()
         self.assemble_structures(block_list)
         self.form_rhs_NR(args['Solution'], ydotam)
 
@@ -211,49 +198,77 @@ class GenAlpha:
 
         # initialize blocks
         for b in block_list:
-            b.update_constant()
             b.update_time(args)
             b.update_solution(args)
 
-        iit = 0; nit = 30; alpha = 0; beta = 0.5;# set Newton method parameters
-        self.assemble_structures(block_list); self.form_rhs_NR(yaf, ydotam); self.form_matrix_NR(dt)
-        res_old = np.max(np.abs(copy.deepcopy(self.res))); res_trial = copy.deepcopy(res_old)
-        dy = scipy.sparse.linalg.spsolve(csr_matrix(self.M), self.res)
 
-        while np.max(np.abs(self.res)) > 5e-4 and iit < nit:
-            # Backtracking Algorithm
-            # if iit == 0:
-            #     y_new= yaf + dy
-            # else:
-            ss = 2
-            if iit > 10 and ss < 1e-7:
-                print("Using scipy optimizer.")
-                minimize
-                pdb.set_trace()
-                #dy = np.random.rand(dy.shape)
-            while np.max(np.abs(res_trial)) >= (1-alpha*ss)*np.max(np.abs(res_old)):
-                ss = ss*beta
-                if ss < 1:  print(f"Backtracking.  Step size {ss}.  Current residual {res_old}, trial residual {res_trial}",flush=True)
-                if ss < 1e-7:
-                    pdb.set_trace()
-                    # print("Inspecting Junctions")
-                    # for b in block_list:
-                    #     if str(type(b)) == "<class 'svzerodsolver.blocks.STATICPJunction'>":
-                    #         curr_y, wire_dict, Q, areas = b.unpack_params(args)
-                    #         print(f"block name: {b.name} \nQ: {Q.flatten()}")
-                    #         pdb.set_trace()
-                    dy = np.random.rand(dy.shape[0],); ss = 2
-                y_trial = yaf + ss * dy
-                ydotam_trial = ydotam + self.alpha_m * (ss*dy) / (self.alpha_f * self.gamma * dt)
-                try:
-                    res_trial = self.take_newt_step(y_trial, ydotam_trial, args, block_list, dt)
-                except:
-                    print("error getting trial residual"); pdb.set_trace()
-            res_old = res_trial
-                #if iit > 3: pdb.set_trace()
-            yaf = copy.deepcopy(y_trial); ydotam = copy.deepcopy(ydotam_trial); res_old = copy.deepcopy(res_trial)
-            dy = scipy.sparse.linalg.spsolve(csr_matrix(self.M), self.res)
-            if np.any(np.isnan(self.res)):
+        # NATALIA
+        # iit = 0; nit = 30; alpha = 0; beta = 0.5;# set Newton method parameters
+        # self.assemble_structures(block_list); self.form_rhs_NR(yaf, ydotam); self.form_matrix_NR(dt)
+        # res_old = np.max(np.abs(copy.deepcopy(self.res))); res_trial = copy.deepcopy(res_old)
+        # dy = scipy.sparse.linalg.spsolve(csr_matrix(self.M), self.res)
+        #
+        # while np.max(np.abs(self.res)) > 5e-4 and iit < nit:
+        #     # Backtracking Algorithm
+        #     # if iit == 0:
+        #     #     y_new= yaf + dy
+        #     # else:
+        #     ss = 2
+        #     if iit > 10 and ss < 1e-7:
+        #         print("Using scipy optimizer.")
+        #         minimize
+        #         pdb.set_trace()
+        #         #dy = np.random.rand(dy.shape)
+        #     while np.max(np.abs(res_trial)) >= (1-alpha*ss)*np.max(np.abs(res_old)):
+        #         ss = ss*beta
+        #         if ss < 1:  print(f"Backtracking.  Step size {ss}.  Current residual {res_old}, trial residual {res_trial}",flush=True)
+        #         if ss < 1e-7:
+        #             pdb.set_trace()
+        #             # print("Inspecting Junctions")
+        #             # for b in block_list:
+        #             #     if str(type(b)) == "<class 'svzerodsolver.blocks.STATICPJunction'>":
+        #             #         curr_y, wire_dict, Q, areas = b.unpack_params(args)
+        #             #         print(f"block name: {b.name} \nQ: {Q.flatten()}")
+        #             #         pdb.set_trace()
+        #             dy = np.random.rand(dy.shape[0],); ss = 2
+        #         y_trial = yaf + ss * dy
+        #         ydotam_trial = ydotam + self.alpha_m * (ss*dy) / (self.alpha_f * self.gamma * dt)
+        #         try:
+        #             res_trial = self.take_newt_step(y_trial, ydotam_trial, args, block_list, dt)
+        #         except:
+        #             print("error getting trial residual"); pdb.set_trace()
+        #     res_old = res_trial
+        #         #if iit > 3: pdb.set_trace()
+        #     yaf = copy.deepcopy(y_trial); ydotam = copy.deepcopy(ydotam_trial); res_old = copy.deepcopy(res_trial)
+        #     dy = scipy.sparse.linalg.spsolve(csr_matrix(self.M), self.res)
+        #     if np.any(np.isnan(self.res)):
+
+        iit = 0
+        invdt = 1.0 / dt
+        fac_ydotam = self.fac * invdt
+        while (np.abs(self.res).max() > 5e-4 or iit == 0) and iit < nit:
+            # update solution-dependent blocks
+            for b in block_list:
+                b.update_solution(args)
+
+            # update residual and jacobian
+            self.assemble_structures(block_list)
+            self.form_rhs_NR(yaf, ydotam)
+            self.form_matrix_NR(invdt)
+
+            # perform finite-difference check of jacobian if requested
+            if args['check_jacobian']:
+                if args['Time'] > dt:
+                    self.check_jacobian(copy.deepcopy(self.res), ydotam, args, block_list)
+
+            # solve for Newton increment
+            dy = self.solver(self.M, self.res)
+
+            # update solution
+            yaf += dy
+            ydotam += dy * fac_ydotam
+
+            if np.isnan(self.res).any():
                 raise RuntimeError('Solution nan')
             iit += 1
             print(iit, " Newton iterations. Current residual: " , np.max(np.abs(self.res)))
