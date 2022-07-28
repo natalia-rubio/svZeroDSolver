@@ -217,16 +217,23 @@ class GenAlpha:
             # if iit == 0:
             #     y_new= yaf + dy
             # else:
-            ss = 2
-            while np.max(np.abs(res_trial)) >= (1-alpha*ss)*np.max(np.abs(res_old)):
-                ss = ss*beta
-                if ss < 1:  print(f"Backtracking.  Current residual {res_old}, trial residual {res_trial}")
-                y_trial = yaf + ss * dy
-                ydotam_trial = ydotam + self.alpha_m * (ss*dy) / (self.alpha_f * self.gamma * dt)
-                res_trial = self.take_newt_step(y_trial, ydotam_trial, args, block_list, dt)
-                #pdb.set_trace()
+            backtracking = True
+            if backtracking:
+                ss = 2
+                while np.max(np.abs(res_trial)) >= (1-alpha*ss)*np.max(np.abs(res_old)):
+                    ss = ss*beta
+                    if ss < 1:  print(f"Backtracking.  Current residual {res_old}, trial residual {res_trial}")
+                    y_trial = yaf + ss * dy
+                    ydotam_trial = ydotam + self.alpha_m * (ss*dy) / (self.alpha_f * self.gamma * dt)
+                    res_trial = self.take_newt_step(y_trial, ydotam_trial, args, block_list, dt)
+                    # for b in block_list:
+                    #     if b.name[0] == "J":
+                    #         curr_y, wire_dict, Q, areas, max_inlet = b.unpack_params(args)
+                    #         print(f"{b.name[0:2]}: Q = {Q}")#. A: {areas}")
+                    # pdb.set_trace()
+
             res_old = res_trial
-                #if iit > 3: pdb.set_trace()
+            if iit > 50: pdb.set_trace()
             yaf = copy.deepcopy(y_trial); ydotam = copy.deepcopy(ydotam_trial); res_old = copy.deepcopy(res_trial)
             dy = scipy.sparse.linalg.spsolve(csr_matrix(self.M), self.res)
             if np.any(np.isnan(self.res)):

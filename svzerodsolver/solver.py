@@ -201,7 +201,7 @@ def create_junction_blocks(parameters, custom_0d_elements_arguments):
                 "areas" : junction["areas"],
                 "lengths" : junction["lengths"]}
         except:
-            junction_parameters = {}
+            junction_parameters = {"areas" : junction["areas"]}
         if not junction_name.startswith("J") and not junction_name[1].isnumeric():
             message = "Error. Joint name, " + junction_name + ", is not 'J' followed by numeric values. The 0D solver assumes that all joint names are 'J' followed by numeric values in the 0d solver input file. Note that the joint names are the same as the junction names."
             raise RuntimeError(message)
@@ -222,8 +222,13 @@ def create_junction_blocks(parameters, custom_0d_elements_arguments):
                 junction_blocks[junction_name] = ntwku.DNNJunction(junction_parameters, connecting_block_list = connecting_block_list, name = junction_name, flow_directions = flow_directions)
             elif junction["junction_type"] == "UNIFIED0D_JUNCTION":
                 junction_blocks[junction_name] = ntwku.UNIFIED0DJunction(junction_parameters, connecting_block_list = connecting_block_list, name = junction_name, flow_directions = flow_directions)
+            elif junction["junction_type"] == "TP_JUNCTION":
+                junction_blocks[junction_name] = ntwku.TPJunction(junction_parameters, connecting_block_list = connecting_block_list, name = junction_name, flow_directions = flow_directions)
+            elif junction["junction_type"] == "TP_MARTIN_JUNCTION":
+                junction_blocks[junction_name] = ntwku.TPMARTINJunction(junction_parameters, connecting_block_list = connecting_block_list, name = junction_name, flow_directions = flow_directions)
 
             else: # this is a custom, user-defined junction block
+                pdb.set_trace()
                 custom_0d_elements_arguments.junction_args[junction_name].update({"connecting_block_list" : connecting_block_list, "flow_directions" : flow_directions, "name" : junction_name})
                 junction_blocks[junction_name] = create_custom_element(junction["junction_type"], custom_0d_elements_arguments.junction_args[junction_name])
         else:
@@ -989,6 +994,7 @@ def set_up_and_run_0d_simulation(zero_d_solver_input_file_path, draw_directed_gr
 
         create_LPN_blocks(parameters_mean, custom_0d_elements_arguments)
         set_solver_parameters(parameters_mean)
+        print("using steady BCs")
         zero_d_time, results_0d, var_name_list, y_f, ydot_f, var_name_list_original = run_network_util(
                             zero_d_solver_input_file_path,
                             parameters_mean,
@@ -1013,8 +1019,8 @@ def set_up_and_run_0d_simulation(zero_d_solver_input_file_path, draw_directed_gr
     print("0D simulation completed!\n")
 
     # Natalia Addition
-    with open('../svzerodsolver/tf_graph_dict.pickle', 'wb') as handle:
-        pickle.dump(args["tf_graph_dict"], handle)
+    # with open('../svzerodsolver/tf_graph_dict.pickle', 'wb') as handle:
+    #     pickle.dump(args["tf_graph_dict"], handle)
 
     results_dict = reformat_network_util_results_branch(zero_d_time, results_0d, var_name_list, parameters)
     qoi_list = ["pressure", "flow"]

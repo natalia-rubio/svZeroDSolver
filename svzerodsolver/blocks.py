@@ -251,6 +251,8 @@ class LPNBlock:
         dC_analytical = np.asarray(self.mat["dC"])
         self.form_derivative_num(args, epsilon)
 
+
+
 class Junction(LPNBlock):
     """
     Junction points between LPN blocks with specified directions of flow
@@ -281,6 +283,155 @@ class Junction(LPNBlock):
         tmp += (self.flow_directions[-1],)
         self.mat['F'].append(tmp)
 
+class TPJunction(Junction):
+
+    def __init__(self, junction_parameters, connecting_block_list=None, name="NoNameJunction", flow_directions=None):
+        Junction.__init__(self, connecting_block_list, name=name, flow_directions=flow_directions)
+        self.flow_directions = flow_directions
+        self.junction_parameters = junction_parameters
+        self.rep_Q_inds = {}
+        self.rho = 1.06
+        for Q_ind in range(len(self.flow_directions)):
+            self.rep_Q_inds.update({Q_ind:[]})
+
+    def F_add_continuity_row(self):
+        tmp = (0,)
+        for d in self.flow_directions[:-1]:
+            tmp += (d,)
+            tmp += (0,)
+        tmp += (self.flow_directions[-1],)
+        self.mat['F'].append(tmp)
+
+
+    def unpack_params(self, args):
+        curr_y = args['Solution']  # the current solution for all unknowns in our 0D model
+        wire_dict = args['Wire dictionary'] # connectivity dictionary
+        areas = self.junction_parameters["areas"] # load areas
+        Q = np.asarray([-1*self.flow_directions[i] *
+            curr_y[wire_dict[self.connecting_wires_list[i]].LPN_solution_ids[1]] for i in range(len(self.flow_directions))]) # calculate velocity in each branch (inlets positive, outlets negative)
+        P = np.asarray([curr_y[wire_dict[self.connecting_wires_list[i]].LPN_solution_ids[0]] for i in range(len(self.flow_directions))]) # calculate velocity in each
+        V = np.divide(Q,areas)
+        max_inlet  = np.argmax(Q)
+        return curr_y, wire_dict, Q, areas, max_inlet
+
+    def set_F(self, Q, max_inlet):
+        self.mat['F'] = []
+        num_branches = len(Q)
+        for i in range(0,num_branches): # loop over branches- each branch (exept the "presumed inlet" is a row of F)
+            if i == max_inlet:
+              continue # if the branch is the dominant inlet branch do not add a new row
+            F_row = [0]*(2*num_branches) # row of 0s with 1 in column corresponding to "presumed inlet" branch pressure
+            F_row[2*max_inlet] = 1/1333 # place 1 in column corresponding to dominant inlet pressure
+            F_row[2*i] = -1/1333 # place -1 in column corresponding to each branch pressure
+            self.mat['F'].append(tuple(F_row)) # append row to F matrix
+        self.F_add_continuity_row() # add mass conservation row
+    # def set_F(self):
+    #     self.mat['F'] = [(1.,) + (0,) * (2 * i + 1) + (-1,) + (0,) * (2 * self.num_connections - 2 * i - 3) for i in
+    #                      range(self.num_connections - 1)] # copy-pasted from normal junction
+    #     tmp = (0,)
+    #     for d in self.flow_directions[:-1]:
+    #         tmp += (d,)
+    #         tmp += (0,)
+    #     tmp += (self.flow_directions[-1],)
+    #     self.mat['F'].append(tmp)
+
+    @tf.function
+    def static_p_tf(self, Q_tf, areas_tf, max_inlet):
+        rho = tf.constant(1.06, dtype=tf.float32) # density of blood
+        with tf.GradientTape(watch_accessed_variables=False, persistent=False) as tape:
+          tape.watch(Q_tf) # track operations applied to Q_tensor
+          V = tf.math.abs(tf.math.divide(Q_tf,areas_tf))
+          C = tf.divide(tf.multiply(rho, tf.multiply(tf.constant(0.5, dtype=tf.float32), tf.subtract(
+           tf.math.square(tf.slice(V, begin = [max_inlet], size = [1])), tf.math.square(V)))),
+           tf.constant(1333, dtype=tf.float32))
+
+        dC_dQ = tape.jacobian(C, Q_tf) # get derivatives of pressure loss coeff wrt. U_tensor
+        return C, dC_dQ
+
+    def set_C(self, args, Q, areas, max_inlet):
+
+        Q_tf = tf.Variable(tf.convert_to_tensor(Q, dtype=tf.float32)) # convert Q to a tensor
+        areas_tf = tf.convert_to_tensor(areas, dtype=tf.float32) # convert areas to a tensor
+        #print("velocity: " + str(np.divide(Q, areas)))
+        branch_config = (Q.size, max_inlet)
+        max_inlet = tf.convert_to_tensor(max_inlet, dtype=tf.int32)
+        if branch_config in args["tf_graph_dict"]:
+          unified_tf_concrete = args["tf_graph_dict"][branch_config]
+        else:
+          unified_tf_concrete = self.static_p_tf.get_concrete_function(Q_tf, areas_tf, max_inlet)
+          args["tf_graph_dict"].update({branch_config: unified_tf_concrete})
+          #print("Adding tf.concrete_function for junction with "+ str(branch_config) + " branches.")
+
+        C_tf, dC_dQ_tf = unified_tf_concrete(Q_tf, areas_tf, max_inlet)
+        C_list = C_tf.numpy().tolist(); C_list.pop(max_inlet)
+        self.mat["C"] = C_list + [0]
+
+        dC_dQ_np = dC_dQ_tf.numpy()
+        #pdb.set_trace()
+        dC_dsol = []
+        for i in range(len(Q)):
+            if i == max_inlet:  continue
+            deriv_list = []
+            for j in range(len(Q)): # loop over velocity derivatives
+                deriv_list.append(0); deriv_list.append(-1*self.flow_directions[i]*dC_dQ_np[i,j])
+            dC_dsol.append(tuple(deriv_list))
+        dC_dsol.append(tuple([0*i for i in deriv_list]))
+        self.mat["dC"] = dC_dsol
+        #print("C: " + str(self.mat["C"]))
+        #pdb.set_trace()
+        return
+
+
+    def update_solution(self, args):
+        curr_y, wire_dict, Q, areas, max_inlet = self.unpack_params(args)
+
+        if np.sum(np.asarray(Q)!=0) == 0: # if all velocities are 0, treat as normal junction (copy-pasted from normal junction code)
+            self.set_F(Q, max_inlet) # set F matrix and c vector for zero flow case
+            print("all zeros")
+        else: # otherwise apply Unified0D model
+            self.set_F(Q, max_inlet) # set F matrix
+            self.set_C(args, Q, areas, max_inlet)
+            #pdb.set_trace()
+
+class TPMARTINJUNCTION(Junction):
+    """
+    Blood vessel junction
+    """
+    def __init__(self, j_params, connecting_block_list=None, name="NoNameJunction", flow_directions=None):
+        InternalJunction.__init__(self, connecting_block_list, name=name, flow_directions=flow_directions)
+        self.j_params = j_params
+
+    def update_solution(self, args):
+        # extract current solution
+        curr_y = args['Solution']
+        wire_dict = args['Wire dictionary']
+
+        # inleat and outlet areas
+        areas = self.j_params['areas']
+
+        # indices of flows
+        q_ind = [wire_dict[self.connecting_wires_list[i]].LPN_solution_ids[1] for i in range(self.num_connections)]
+
+        # inflow and outflows
+        flows = np.array(curr_y[q_ind])
+
+        # average blood velocity (todo: should we use max here?)
+        velo = flows/areas
+
+        # blood density
+        rho = 1.06
+
+        # dynamic pressure and derivative w.r.t. flow
+        p_dyn = 0.5 * rho * velo**2
+        dp_dyn = rho * velo / areas
+
+        self.mat['C'] = np.zeros(self.num_connections)
+        self.mat['dC'] = np.zeros((self.num_connections, self.num_connections * 2))
+        for i in range(self.num_connections - 1):
+            self.mat['C'][i] = - p_dyn[0] + p_dyn[i + 1] # what if index 0 isn't the inlet, also, backwards?
+            self.mat['dC'][i, 3 + 2 * i] = dp_dyn[i + 1] # flip sign
+        self.mat['dC'][:self.num_connections - 1, 1] = - dp_dyn[0]
+
 class UNIFIED0DJunction(Junction):
 
     def __init__(self, junction_parameters, connecting_block_list=None, name="NoNameJunction", flow_directions=None):
@@ -292,7 +443,7 @@ class UNIFIED0DJunction(Junction):
         for Q_ind in range(len(self.flow_directions)):
             self.rep_Q_inds.update({Q_ind:[]})
     def unpack_params(self, args):
-        curr_y = args['Solution']  # the current solution for all unknowns in our 0D model
+        curr_y = args['Solution']  # the current solution for all unknowns in 0D model
         wire_dict = args['Wire dictionary'] # connectivity dictionary
         areas = self.junction_parameters["areas"] # load areas
         Q = np.asarray([-1*self.flow_directions[i] *
@@ -470,6 +621,7 @@ class DNNJunction(Junction):
         Junction.__init__(self, connecting_block_list, name=name, flow_directions=flow_directions)
         self.flow_directions = flow_directions
         self.junction_parameters = junction_parameters
+        print("entering DNN block")
 
     def unpack_params(self, args):
         self.model = args["dnn_model"]["model"]
