@@ -1,0 +1,2 @@
+[console_scripts]
+zerod = svzerodsolver.solver:main

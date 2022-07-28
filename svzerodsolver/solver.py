@@ -600,8 +600,8 @@ def run_network_util(zero_d_solver_input_file_path, parameters, draw_directed_gr
     args['Wire dictionary'] = wire_dict
     args["check_jacobian"] = parameters["simulation_parameters"]["check_jacobian"]
     args["tf_graph_dict"] = {}
-    args["dnn_model"] = {"model": keras.models.load_model('../svzerodsolver/basic_ml_junction_jan'),
-        "scalings": pickle.load(open("../svzerodsolver/prep_opt8_scaling.pkl", "rb"))}
+    args["dnn_model"] = {"model": keras.models.load_model('svzerodsolver/basic_ml_junction_jan'),
+        "scalings": pickle.load(open("svzerodsolver/prep_opt8_scaling.pkl", "rb"))}
     args["ydot"] = 0
 
     # y_next, ydot_next = min_ydot_least_sq_init(neq, 1e-8, y_initial, block_list, args, parameters["simulation_parameters"]["delta_t"], rho)
