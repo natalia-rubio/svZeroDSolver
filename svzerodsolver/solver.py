@@ -619,6 +619,8 @@ def run_network_util(zero_d_solver_input_file_path, parameters, draw_directed_gr
     var_name_list_original = copy.deepcopy(var_name_list)
     results_0d = np.array(ylist)
     zero_d_time = tlist
+    print("1y_next.shape = ", y_next.shape)
+    print("1ydot_next.shape = ", ydot_next.shape)
     return zero_d_time, results_0d, var_name_list, y_next, ydot_next, var_name_list_original
 
 def save_ics(y_ydot_file_path, y_next, ydot_next, var_name_list):
@@ -916,7 +918,7 @@ def save_simulation_results(zero_d_simulation_results_file_path, zero_d_results)
     """
     np.save(zero_d_simulation_results_file_path, zero_d_results)
 
-def set_up_and_run_0d_simulation(zero_d_solver_input_file_path, draw_directed_graph = False, last_cycle = False, save_results_all = False, save_results_branch = True, use_custom_0d_elements = False, custom_0d_elements_arguments_file_path = None, use_ICs_from_npy_file = False, ICs_npy_file_path = None, save_y_ydot_to_npy = False, y_ydot_file_path = None, check_jacobian = False, simulation_start_time = 0.0, use_steady_soltns_as_ics = False):
+def set_up_and_run_0d_simulation(zero_d_solver_input_file_path, draw_directed_graph = False, last_cycle = False, save_results_all = False, save_results_branch = True, use_custom_0d_elements = False, custom_0d_elements_arguments_file_path = None, use_ICs_from_npy_file = False, ICs_npy_file_path = None, save_y_ydot_to_npy = False, y_ydot_file_path = None, check_jacobian = False, simulation_start_time = 0.0, use_steady_soltns_as_ics = True):
     """
     Purpose:
         Create all network_util_NR::LPNBlock objects for the 0d model and run the 0d simulation.
@@ -990,7 +992,7 @@ def set_up_and_run_0d_simulation(zero_d_solver_input_file_path, draw_directed_gr
                         )
 
         y0, ydot0, var_name_list = use_steady_bcs.restore_internal_variables_for_capacitance_based_bcs(y_f, ydot_f, var_name_list_original, altered_bc_blocks)
-
+        print(f"Shape of Y: {y0.shape}.  Shape of Ydot: {ydot0.shape}.")
         save_ics(y_ydot_file_path_temp, y0, ydot0, var_name_list)
 
         use_ICs_from_npy_file = True

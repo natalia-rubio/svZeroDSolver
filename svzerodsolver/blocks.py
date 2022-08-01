@@ -208,8 +208,8 @@ class TotalPressureJunction(InternalJunction):
             if i == max_inlet:
               continue # if the branch is the dominant inlet branch do not add a new row
             F_row = [0]*(2*num_branches) # row of 0s with 1 in column corresponding to "presumed inlet" branch pressure
-            F_row[2*max_inlet] = 1/1333 # place 1 in column corresponding to dominant inlet pressure
-            F_row[2*i] = -1/1333 # place -1 in column corresponding to each branch pressure
+            F_row[2*max_inlet] = 1 # place 1 in column corresponding to dominant inlet pressure
+            F_row[2*i] = -1 # place -1 in column corresponding to each branch pressure
             self.mat['F'].append(tuple(F_row)) # append row to F matrix
         self.F_add_continuity_row() # add mass conservation row
         self.mat['F'] = np.array(self.mat['F'])
