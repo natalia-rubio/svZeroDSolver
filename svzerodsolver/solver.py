@@ -213,6 +213,11 @@ def create_junction_blocks(parameters, custom_0d_elements_arguments):
                                                                            connecting_block_list=connecting_block_list,
                                                                            name=junction_name,
                                                                            flow_directions=flow_directions)
+            elif junction["junction_type"] == "TotalPressureJunction":
+                junction_blocks[junction_name] = ntwku.TotalPressureJunction(junction,
+                                                                           connecting_block_list=connecting_block_list,
+                                                                           name=junction_name,
+                                                                           flow_directions=flow_directions)
             elif junction["junction_type"] == "CUSTOM_JUNCTION": # this is a custom, user-defined junction block
                 custom_0d_elements_arguments.junction_args[junction_name].update({"connecting_block_list" : connecting_block_list, "flow_directions" : flow_directions, "name" : junction_name})
                 junction_blocks[junction_name] = create_custom_element(junction["junction_type"], custom_0d_elements_arguments.junction_args[junction_name])
@@ -586,7 +591,7 @@ def run_network_util(zero_d_solver_input_file_path, parameters, draw_directed_gr
     args['rho'] = rho
     args['Wire dictionary'] = wire_dict
     args["check_jacobian"] = parameters["simulation_parameters"]["check_jacobian"]
-
+    args["tf_graph_dict"] = {}
     # y_next, ydot_next = min_ydot_least_sq_init(neq, 1e-8, y_initial, block_list, args, parameters["simulation_parameters"]["delta_t"], rho)
 
     print("starting simulation")
@@ -911,7 +916,7 @@ def save_simulation_results(zero_d_simulation_results_file_path, zero_d_results)
     """
     np.save(zero_d_simulation_results_file_path, zero_d_results)
 
-def set_up_and_run_0d_simulation(zero_d_solver_input_file_path, draw_directed_graph = False, last_cycle = False, save_results_all = False, save_results_branch = True, use_custom_0d_elements = False, custom_0d_elements_arguments_file_path = None, use_ICs_from_npy_file = False, ICs_npy_file_path = None, save_y_ydot_to_npy = False, y_ydot_file_path = None, check_jacobian = False, simulation_start_time = 0.0, use_steady_soltns_as_ics = True):
+def set_up_and_run_0d_simulation(zero_d_solver_input_file_path, draw_directed_graph = False, last_cycle = False, save_results_all = False, save_results_branch = True, use_custom_0d_elements = False, custom_0d_elements_arguments_file_path = None, use_ICs_from_npy_file = False, ICs_npy_file_path = None, save_y_ydot_to_npy = False, y_ydot_file_path = None, check_jacobian = False, simulation_start_time = 0.0, use_steady_soltns_as_ics = False):
     """
     Purpose:
         Create all network_util_NR::LPNBlock objects for the 0d model and run the 0d simulation.

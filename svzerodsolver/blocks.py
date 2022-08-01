@@ -31,6 +31,7 @@
 # SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import numpy as np
+import tensorflow as tf
 
 class wire:
     """
@@ -47,7 +48,6 @@ class wire:
             raise Exception('Connecting elements to wire should be passed as a 2-tuple')
         self.connecting_elements = connecting_elements
         self.LPN_solution_ids = [None] * 2
-
 
 class LPNBlock:
     def __init__(self, connecting_block_list=None, name="NoName", flow_directions=[]):
@@ -135,7 +135,6 @@ class LPNBlock:
             vnum = local_eq - nwirevars
             return self.LPN_solution_ids[vnum]
 
-
 class InternalJunction(LPNBlock):
     """
     Internal junction points between LPN blocks (for mesh refinement, does not appear as physical junction in model)
@@ -167,7 +166,6 @@ class InternalJunction(LPNBlock):
         self.neq = self.num_connections
         self.flow_directions.append(direction)
 
-
 class BloodVesselJunction(InternalJunction):
     """
     Blood vessel junction (dummy for future implementation of blood pressure losses at junctions)
@@ -176,6 +174,238 @@ class BloodVesselJunction(InternalJunction):
         InternalJunction.__init__(self, connecting_block_list, name=name, flow_directions=flow_directions)
         self.j_params = j_params
 
+class TotalPressureJunction(InternalJunction):
+    """
+    Blood vessel junction (dummy for future implementation of blood pressure losses at junctions)
+    """
+    def __init__(self, j_params, connecting_block_list=None, name="NoNameJunction", flow_directions=None):
+        InternalJunction.__init__(self, connecting_block_list, name=name, flow_directions=flow_directions)
+        self.j_params = j_params
+        self.rho = 1.06
+
+    def F_add_continuity_row(self):
+        tmp = (0,)
+        for d in self.flow_directions[:-1]:
+            tmp += (d,)
+            tmp += (0,)
+        tmp += (self.flow_directions[-1],)
+        self.mat['F'].append(tmp)
+
+    def unpack_params(self, args):
+        curr_y = args['Solution']  # the current solution for all unknowns in our 0D model
+        wire_dict = args['Wire dictionary'] # connectivity dictionary
+        areas = self.j_params["areas"] # load areas
+        Q = np.asarray([-1*self.flow_directions[i] *
+            curr_y[wire_dict[self.connecting_wires_list[i]].LPN_solution_ids[1]] for i in range(len(self.flow_directions))]) # calculate velocity in each branch (inlets positive, outlets negative)
+        V = np.divide(Q,areas)
+        max_inlet  = np.argmax(Q)
+        return curr_y, wire_dict, Q, areas, max_inlet
+
+    def set_F(self, Q, max_inlet):
+        self.mat['F'] = []
+        num_branches = len(Q)
+        for i in range(0,num_branches): # loop over branches- each branch (exept the "presumed inlet" is a row of F)
+            if i == max_inlet:
+              continue # if the branch is the dominant inlet branch do not add a new row
+            F_row = [0]*(2*num_branches) # row of 0s with 1 in column corresponding to "presumed inlet" branch pressure
+            F_row[2*max_inlet] = 1/1333 # place 1 in column corresponding to dominant inlet pressure
+            F_row[2*i] = -1/1333 # place -1 in column corresponding to each branch pressure
+            self.mat['F'].append(tuple(F_row)) # append row to F matrix
+        self.F_add_continuity_row() # add mass conservation row
+        self.mat['F'] = np.array(self.mat['F'])
+        self.mats_to_assemble.add("F")
+
+    @tf.function
+    def static_p_tf(self, Q_tf, areas_tf, max_inlet):
+        rho = tf.constant(1.06, dtype=tf.float32) # density of blood
+        with tf.GradientTape(watch_accessed_variables=False, persistent=False) as tape:
+          tape.watch(Q_tf) # track operations applied to Q_tensor
+          V = tf.math.abs(tf.math.divide(Q_tf,areas_tf))
+          C = tf.divide(tf.multiply(rho, tf.multiply(tf.constant(0.5, dtype=tf.float32), tf.subtract(
+           tf.math.square(tf.slice(V, begin = [max_inlet], size = [1])), tf.math.square(V)))),
+           tf.constant(1333, dtype=tf.float32))
+
+        dC_dQ = tape.jacobian(C, Q_tf) # get derivatives of pressure loss coeff wrt. U_tensor
+        return C, dC_dQ
+
+    def set_C(self, args, Q, areas, max_inlet):
+
+        Q_tf = tf.Variable(tf.convert_to_tensor(Q, dtype=tf.float32)) # convert Q to a tensor
+        areas_tf = tf.convert_to_tensor(areas, dtype=tf.float32) # convert areas to a tensor
+        branch_config = (Q.size, max_inlet)
+        max_inlet = tf.convert_to_tensor(max_inlet, dtype=tf.int32)
+        if branch_config in args["tf_graph_dict"]:
+          unified_tf_concrete = args["tf_graph_dict"][branch_config]
+        else:
+          unified_tf_concrete = self.static_p_tf.get_concrete_function(Q_tf, areas_tf, max_inlet)
+          args["tf_graph_dict"].update({branch_config: unified_tf_concrete})
+
+        C_tf, dC_dQ_tf = unified_tf_concrete(Q_tf, areas_tf, max_inlet)
+        C_list = C_tf.numpy().tolist(); C_list.pop(max_inlet)
+        self.vec["C"] = np.array(C_list + [0])
+        self.vecs_to_assemble.add("C")
+
+        dC_dQ_np = dC_dQ_tf.numpy()
+
+        dC_dsol = []
+        for i in range(len(Q)):
+            if i == max_inlet:  continue
+            deriv_list = []
+            for j in range(len(Q)): # loop over velocity derivatives
+                deriv_list.append(0); deriv_list.append(-1*self.flow_directions[i]*dC_dQ_np[i,j])
+            dC_dsol.append(tuple(deriv_list))
+        dC_dsol.append(tuple([0*i for i in deriv_list]))
+        self.mat["dC"] = np.array(dC_dsol)
+        self.mats_to_assemble.add("dC")
+        return
+
+    def update_solution(self, args):
+        curr_y, wire_dict, Q, areas, max_inlet = self.unpack_params(args)
+
+        if np.sum(np.asarray(Q)!=0) == 0: # if all velocities are 0, treat as normal junction (copy-pasted from normal junction code)
+            self.set_F(Q, max_inlet) # set F matrix and c vector for zero flow case
+            print("all zeros")
+        else: # otherwise apply Unified0D model
+            self.set_F(Q, max_inlet) # set F matrix
+            self.set_C(args, Q, areas, max_inlet)
+            # print(f"Q: {Q}")
+
+class Unified0DJunction(InternalJunction):
+    """
+    Blood vessel junction (dummy for future implementation of blood pressure losses at junctions)
+    """
+    def __init__(self, j_params, connecting_block_list=None, name="NoNameJunction", flow_directions=None):
+        InternalJunction.__init__(self, connecting_block_list, name=name, flow_directions=flow_directions)
+        self.j_params = j_params
+        self.rho = 1.06
+
+    def F_add_continuity_row(self):
+        tmp = (0,)
+        for d in self.flow_directions[:-1]:
+            tmp += (d,)
+            tmp += (0,)
+        tmp += (self.flow_directions[-1],)
+        self.mat['F'].append(tmp)
+
+    def unpack_params(self, args):
+        curr_y = args['Solution']  # the current solution for all unknowns in 0D model
+        wire_dict = args['Wire dictionary'] # connectivity dictionary
+        areas = self.j_params["areas"] # load areas
+        Q = np.asarray([-1*self.flow_directions[i] *
+            curr_y[wire_dict[self.connecting_wires_list[i]].LPN_solution_ids[1]] for i in range(len(self.flow_directions))]) # flow in each branch (inlets +, outlets -)
+        angles = copy.deepcopy(self.j_params["angles"]) # load angles
+        return curr_y, wire_dict, Q, areas, angles
+
+    def classify_branches(self, Q):
+        inlet_indices = list(np.asarray(np.nonzero(Q>=0)).astype(int)[0]) # identify inlets
+        Q_in = Q[inlet_indices]
+        max_inlet_tol = 0.01
+        max_inlet_cands = np.asarray(inlet_indices)[Q_in > (np.max(Q_in)-max_inlet_tol)]
+        max_inlet = np.min(max_inlet_cands)
+        num_inlets = len(inlet_indices) # number of inlets
+        outlet_indices = list(np.nonzero(Q<0)[0]) # identify outlets
+        num_outlets = len(outlet_indices) # number of outlets
+        num_branches = Q.size # number of branches
+        # inlet/outlet sanity checks
+        if num_inlets ==0:
+          pdb.set_trace()
+        assert num_inlets != 0, "No junction inlet."
+        assert num_outlets !=0, "No junction outlet. Q: " + str(Q)
+        assert num_inlets + num_outlets == num_branches, "Sum of inlets and outlets does not equal the number of branches."
+        return inlet_indices, max_inlet, num_inlets, outlet_indices, num_outlets, num_branches
+
+    def set_no_flow_mats(self):
+        self.mat['F'] = [(1.,) + (0,) * (2 * i + 1) + (-1,) + (0,) * (2 * self.num_connections - 2 * i - 3) for i in
+                         range(self.num_connections - 1)] # copy-pasted from normal junction
+        self.F_add_continuity_row() # add mass conservation row
+        self.mats_to_assemble.add("F")
+
+    def set_F(self, Q):
+        inlet_indices, max_inlet, num_inlets, outlet_indices, num_outlets, num_branches = self.classify_branches(Q)
+        self.mat['F'] = []
+        for i in range(0,num_branches): # loop over branches- each branch (exept the "presumed inlet" is a row of F)
+            if i == max_inlet:
+              continue # if the branch is the dominant inlet branch do not add a new column
+            F_row = [0]*(2*num_branches) # row of 0s with 1 in column corresponding to "presumed inlet" branch pressure
+            F_row[2*max_inlet] = 1 # place 1 in column corresponding to dominant inlet pressure
+            F_row[2*i] = -1 # place -1 in column corresponding to each branch pressure
+            self.mat['F'].append(tuple(F_row)) # append row to F matrix
+        self.F_add_continuity_row() # add mass conservation row
+        self.mats_to_assemble.add("F")
+
+    def configure_angles(self, angles, max_inlet, num_branches):
+        angle_shift = np.pi - angles[max_inlet] # find shift to set first inlet angle to pi
+        for i in range(num_branches): # loop over all angles
+            angles[i] = angles[i] + angle_shift # shift all junction angles
+        assert len(angles) == num_branches, 'One angle should be provided for each branch'
+        return angles
+
+    @tf.function
+    def unified0d_tf(self, Q_tensor, areas_tensor, angles_tensor, num_outlets, outlet_indices, max_inlet):
+        rho = 1.06 # density of blood
+        with tf.GradientTape(watch_accessed_variables=False, persistent=False) as tape:
+          #create_tape_time = time.time()
+          tape.watch(Q_tensor) # track operations applied to Q_tensor
+          U_tensor = tf.divide(Q_tensor, areas_tensor)
+          C_outlets, outlets = junction_loss_coeff_tf(U_tensor, areas_tensor, angles_tensor) # run Unified0D junction loss coefficient function
+          dP_unified0d_outlets = (rho*tf.multiply(
+              C_outlets, tf.square(tf.boolean_mask(U_tensor, outlets))) + 0.5*rho*tf.subtract(
+              tf.square(tf.slice(U_tensor, begin = [max_inlet], size = [1])), tf.square(tf.boolean_mask(U_tensor, outlets)))) # compute pressure loss according to the unified 0d model
+        ddP_dU_outlets = tape.jacobian(dP_unified0d_outlets, Q_tensor) # get derivatives of pressure loss coeff wrt. U_tensor
+        return dP_unified0d_outlets, ddP_dU_outlets, outlets
+
+    def apply_unified0d(self, args, Q, areas, angles):
+        inlet_indices, max_inlet, num_inlets, outlet_indices, num_outlets, num_branches = self.classify_branches(Q)
+        angles = self.configure_angles(copy.deepcopy(angles), max_inlet, num_branches) # configure angles for unified0d
+        Q_tensor = tf.Variable(tf.convert_to_tensor(Q)) # convert Q to a tensor
+        areas_tensor = tf.convert_to_tensor(areas, dtype="double") # convert areas to a tensor
+        angles_tensor = tf.convert_to_tensor(angles, dtype="double") # convert angles to a tensor
+        outlet_indices_tensor = tf.convert_to_tensor(outlet_indices, dtype="double") # convert U to a tensor
+        max_inlet_int = tf.constant(max_inlet, dtype="int32") # convert max_inlet to a constant
+        num_outlets_int = tf.constant(num_outlets, dtype="int32") # convert num_outlets to a constant
+        start_time = time.time()
+        branch_config = tuple(inlet_indices + outlet_indices)
+        if branch_config in args["tf_graph_dict"]:
+          unified_tf_concrete = args["tf_graph_dict"][branch_config]
+        else:
+          unified_tf_concrete = self.unified0d_tf.get_concrete_function(Q_tensor, areas_tensor, angles_tensor, num_outlets_int, outlet_indices_tensor, max_inlet_int)
+          args["tf_graph_dict"].update({branch_config: unified_tf_concrete})
+          print("adding tf.concrete_function for ", branch_config)
+        dP_unified0d_outlets, ddP_dU_outlets, outlets = unified_tf_concrete(Q_tensor, areas_tensor, angles_tensor, num_outlets_int, outlet_indices_tensor, max_inlet_int)
+
+        end_time = time.time()
+        #print(U)
+        if end_time - start_time > 0.1: print("time to apply unified0d: ", end_time - start_time)
+        assert tf.size(dP_unified0d_outlets) == num_outlets, "One coefficient should be returned per outlet."
+        assert np.array_equal(Q[outlets.numpy()], Q[outlet_indices])
+        return dP_unified0d_outlets.numpy(), ddP_dU_outlets.numpy(), outlets
+
+    def set_C(self, dP_unified0d_outlets, Q, areas):
+        inlet_indices, max_inlet, num_inlets, outlet_indices, num_outlets, num_branches = self.classify_branches(Q)
+        C_vec = [0] * num_branches
+        for i in range(num_branches):
+          if i in outlet_indices:
+            C_vec[i] =  -1*dP_unified0d_outlets[outlet_indices.index(i)]
+          elif i != max_inlet:
+            C_vec[i] = - 0.5 * self.rho * (np.square(Q[max_inlet]/areas[max_inlet]) - np.square(Q[i]/areas[i]))
+        C_vec.pop(max_inlet) # remove dominant inlet entry
+        C_vec = C_vec + [0] # mass conservation
+        self.mat["C"] = C_vec # set C vector
+        self.vecs_to_assemble.add("C")
+
+        dC_dQ_np = dC_dQ_tf.numpy()
+
+        dC_dsol = []
+        for i in range(len(Q)):
+            if i == max_inlet:  continue
+            deriv_list = []
+            for j in range(len(Q)): # loop over velocity derivatives
+                deriv_list.append(0); deriv_list.append(-1*self.flow_directions[i]*dC_dQ_np[i,j])
+            dC_dsol.append(tuple(deriv_list))
+        dC_dsol.append(tuple([0*i for i in deriv_list]))
+        self.mat["dC"] = dC_dsol
+        self.mats_to_assemble.add["dC"]
+        return
 
 class BloodVessel(LPNBlock):
     """
@@ -202,8 +432,8 @@ class BloodVessel(LPNBlock):
         self.mat['E'][1, 4] = -self.C
         self.mat['F'] = np.array(
             [
-                [1.0, 0.0, -1.0, 0.0, 0.0], 
-                [0.0, 1.0, 0.0, -1.0, 0.0], 
+                [1.0, 0.0, -1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, -1.0, 0.0],
                 [1.0, 0.0, 0.0, 0.0, -1.0]
             ],
             dtype=float
@@ -220,7 +450,6 @@ class BloodVessel(LPNBlock):
         self.mat['F'][[0, 2], 1] = fac2
         self.mat['dF'][[0, 2], 1] = fac1
         self.mats_to_assemble.update({"F", "dF"})
-
 
 class UnsteadyResistanceWithDistalPressure(LPNBlock):
     def __init__(self, Rfunc, Pref_func, connecting_block_list=None, name="NoNameUnsteadyResistanceWithDistalPressure",
@@ -268,7 +497,6 @@ class UnsteadyPressureRef(LPNBlock):
         self.vecs_to_assemble.add("C")
         self.mats_to_assemble.add("F")
 
-
 class UnsteadyFlowRef(LPNBlock):
     """
     Flow reference
@@ -287,7 +515,6 @@ class UnsteadyFlowRef(LPNBlock):
         self.vec['C'][0] = -self.Qfunc(t)
         self.vecs_to_assemble.add("C")
         self.mats_to_assemble.add("F")
-
 
 class UnsteadyRCRBlockWithDistalPressure(LPNBlock):
     """
@@ -328,7 +555,6 @@ class UnsteadyRCRBlockWithDistalPressure(LPNBlock):
         self.vec['C'][1] = self.Pref_func(t)
         self.mats_to_assemble.update({"E", "F"})
         self.vecs_to_assemble.add("C")
-
 
 class OpenLoopCoronaryWithDistalPressureBlock(LPNBlock):
     """
