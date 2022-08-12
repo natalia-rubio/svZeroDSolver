@@ -619,8 +619,6 @@ def run_network_util(zero_d_solver_input_file_path, parameters, draw_directed_gr
     var_name_list_original = copy.deepcopy(var_name_list)
     results_0d = np.array(ylist)
     zero_d_time = tlist
-    print("1y_next.shape = ", y_next.shape)
-    print("1ydot_next.shape = ", ydot_next.shape)
     return zero_d_time, results_0d, var_name_list, y_next, ydot_next, var_name_list_original
 
 def save_ics(y_ydot_file_path, y_next, ydot_next, var_name_list):
@@ -976,8 +974,11 @@ def set_up_and_run_0d_simulation(zero_d_solver_input_file_path, draw_directed_gr
         parameters_mean["simulation_parameters"]["number_of_time_pts_per_cardiac_cycle"] = 11
         parameters_mean["simulation_parameters"]["number_of_cardiac_cycles"]             = 3
 
-        y_ydot_file_path_temp = os.path.splitext(zero_d_solver_input_file_path)[0] + "_initial_conditions.npy"
-
+        #y_ydot_file_path_temp = os.path.splitext(zero_d_solver_input_file_path)[0] + "_initial_conditions.npy"
+        junction_type = zero_d_solver_input_file_path.split("/")[1]
+        model_name = zero_d_solver_input_file_path[-15:-3]
+        y_ydot_file_path_temp = f"vmr_test_cases/{junction_type}/initial_conditions/{model_name}_initial_conditions.npy"
+        results_file_path_temp = f"vmr_test_cases/{junction_type}/results_0d/{model_name}"
         create_LPN_blocks(parameters_mean, custom_0d_elements_arguments)
         set_solver_parameters(parameters_mean)
         zero_d_time, results_0d, var_name_list, y_f, ydot_f, var_name_list_original = run_network_util(
@@ -992,7 +993,7 @@ def set_up_and_run_0d_simulation(zero_d_solver_input_file_path, draw_directed_gr
                         )
 
         y0, ydot0, var_name_list = use_steady_bcs.restore_internal_variables_for_capacitance_based_bcs(y_f, ydot_f, var_name_list_original, altered_bc_blocks)
-        print(f"Shape of Y: {y0.shape}.  Shape of Ydot: {ydot0.shape}.")
+
         save_ics(y_ydot_file_path_temp, y0, ydot0, var_name_list)
 
         use_ICs_from_npy_file = True
@@ -1009,11 +1010,11 @@ def set_up_and_run_0d_simulation(zero_d_solver_input_file_path, draw_directed_gr
     if save_results_all or save_results_branch:
         zero_d_input_file_name = os.path.splitext(zero_d_solver_input_file_path)[0]
         if save_results_all:
-            zero_d_simulation_results_file_path = zero_d_input_file_name + "_all_results"
+            zero_d_simulation_results_file_path = results_file_path_temp + "_all_results"
             zero_d_results = reformat_network_util_results_all(zero_d_time, results_0d, var_name_list)
             save_simulation_results(zero_d_simulation_results_file_path, zero_d_results)
         if save_results_branch:
-            zero_d_simulation_results_file_path = zero_d_input_file_name + "_branch_results"
+            zero_d_simulation_results_file_path = results_file_path_temp + "_branch_results"
             zero_d_results = reformat_network_util_results_branch(zero_d_time, results_0d, var_name_list, parameters)
             save_simulation_results(zero_d_simulation_results_file_path, zero_d_results)
 
