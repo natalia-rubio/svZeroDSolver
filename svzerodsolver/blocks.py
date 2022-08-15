@@ -333,10 +333,24 @@ class Unified0DJunction(InternalJunction):
         self.F_add_continuity_row() # add mass conservation row
         self.mats_to_assemble.add("F")
 
-    def configure_angles(self, angles, max_inlet, num_branches):
-        angle_shift = np.pi - angles[max_inlet] # find shift to set first inlet angle to pi
+    def get_angle_difference(self, tangent1, tangent2):
+        tangent1 = tangent1/np.linalg.norm(tangent1)
+        tangent2 = tangent2/np.linalg.norm(tangent2)
+        angle_difference = np.arccos(np.sum(np.multiply(
+                            np.asarray(tangent1),
+                            np.asarray(tangent2)), axis=0))
+        return angle_difference
+
+    def configure_angles(self, tangents, Q, max_inlet, num_branches):
+        angles = []
         for i in range(num_branches): # loop over all angles
-            angles[i] = angles[i] + angle_shift # shift all junction angles
+            if i == max_inlet:
+                 angles.append(np.pi)
+            else:
+                if Q[i] < 0:
+                    angles.append(self.get_angle_difference(tangents[max_inlet], tangents[i]))
+                else:
+                    angles.append(np.pi + self.get_angle_difference(tangents[max_inlet], tangents[i]))
         assert len(angles) == num_branches, 'One angle should be provided for each branch'
         return angles
 
@@ -347,6 +361,7 @@ class Unified0DJunction(InternalJunction):
           #create_tape_time = time.time()
           tape.watch(Q_tensor) # track operations applied to Q_tensor
           U_tensor = tf.divide(Q_tensor, areas_tensor)
+          
           C_outlets, outlets = junction_loss_coeff_tf(U_tensor, areas_tensor, angles_tensor) # run Unified0D junction loss coefficient function
           dP_unified0d_outlets = (rho*tf.multiply(
               C_outlets, tf.square(tf.boolean_mask(U_tensor, outlets))) + 0.5*rho*tf.subtract(
