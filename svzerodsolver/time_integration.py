@@ -88,7 +88,10 @@ class GenAlpha:
                 self.mat[n][bl.global_row_id] = bl.vec[n]
             while bl.mats_to_assemble:
                 n = bl.mats_to_assemble.pop()
-                self.mat[n][bl.flat_row_ids, bl.flat_col_ids] = bl.mat[n].ravel()
+                try:
+                    self.mat[n][bl.flat_row_ids, bl.flat_col_ids] = bl.mat[n].ravel()
+                except:
+                    import pdb; pdb.set_trace()
 
     def form_matrix_NR(self, invdt):
         """
@@ -158,7 +161,33 @@ class GenAlpha:
         fig.suptitle('absolute error vs epsilon')
         plt.show()
 
-    def step(self, y, ydot, t, block_list, args, dt, nit=30):
+    def take_hypothetical_newton_step(self, y_curr, ydotam_curr, dy, args, block_list, dt):
+        fac_ydotam = self.fac / dt
+        old_solution = args["Solution"]
+        old_res = copy.deepcopy(self.res)
+
+        yaf = y_curr + dy
+        ydotam = ydotam_curr + dy * fac_ydotam
+
+        args['Solution'] = yaf
+
+        for b in block_list:
+            b.update_solution(args)
+
+        # update residual and jacobian
+        self.assemble_structures(block_list)
+        self.form_rhs_NR(yaf, ydotam)
+
+        improvement = np.max(self.res) < np.max(old_res)
+        print(improvement)
+        print(f"Old residual norm: {np.max(old_res)}.  Hypothetical residual norm: {np.max(self.res)}.")
+
+        args['Solution'] = old_solution
+        self.res = old_res
+
+        return improvement
+
+    def step(self, y, ydot, t, block_list, args, dt, nit=100):
         """
         Perform one time step
         """
@@ -199,8 +228,20 @@ class GenAlpha:
             # solve for Newton increment
             dy = self.solver(self.M, self.res)
 
+            i = 1
+            if iit > 10:
+                improvement = False;
+                while improvement == False:
+                    i = i/2
+                    print(f"Backtracking.  Step size reduced by {i}")
+                    if i < 10e-5:
+                        import pdb; pdb.set_trace()
+                        break
+                    improvement = self.take_hypothetical_newton_step(y_curr = copy.deepcopy(yaf),
+                    ydotam_curr = copy.deepcopy(ydotam), dy = dy*i, args = args, block_list = block_list, dt = dt)
+
             # update solution
-            yaf += dy
+            yaf += dy*i
             ydotam += dy * fac_ydotam
 
             if np.isnan(self.res).any():
@@ -208,10 +249,11 @@ class GenAlpha:
 
             args['Solution'] = yaf
             iit += 1
+            #print(f"residual: {self.res}")
 
         if iit >= nit:
-            print("Max NR iterations reached at time: ", t, " , max error: ", max(abs(self.res)))
-
+            print(f"Max NR iterations ({nit}) reached at time: ", t, " , max error: ", max(abs(self.res)))
+            import pdb; pdb.set_trace()
         # update time step
         curr_y = y + (yaf - y) / self.alpha_f
         curr_ydot = ydot + (ydotam - ydot) / self.alpha_m

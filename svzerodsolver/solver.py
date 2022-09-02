@@ -218,6 +218,11 @@ def create_junction_blocks(parameters, custom_0d_elements_arguments):
                                                                            connecting_block_list=connecting_block_list,
                                                                            name=junction_name,
                                                                            flow_directions=flow_directions)
+            elif junction["junction_type"] == "Unified0DJunction":
+                junction_blocks[junction_name] = ntwku.Unified0DJunction(junction,
+                                                                           connecting_block_list=connecting_block_list,
+                                                                           name=junction_name,
+                                                                           flow_directions=flow_directions)
             elif junction["junction_type"] == "CUSTOM_JUNCTION": # this is a custom, user-defined junction block
                 custom_0d_elements_arguments.junction_args[junction_name].update({"connecting_block_list" : connecting_block_list, "flow_directions" : flow_directions, "name" : junction_name})
                 junction_blocks[junction_name] = create_custom_element(junction["junction_type"], custom_0d_elements_arguments.junction_args[junction_name])

@@ -215,5 +215,4 @@ def assign_global_ids(block_list,
         # recall that global_col_id is a list of the indices at which this LPNBlock's associated solution variables (Pin, Qin, Pout, Qout, and internal solutions) are stored in the global vector of solution variables/unknowns
 
     # print var_name_list
-
     return var_name_list

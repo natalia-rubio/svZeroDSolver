@@ -25,7 +25,7 @@ def project_results(junction_type, model_name):
     params.solver_file_name = model_name + "_0d.in"
     params.output_directory = "vmr_test_cases/" + junction_type + "/results_cent/"
     params.output_file_name = model_name + "_centerline_results"
-    params.centerlines_file = "../../junction_ml/data/centerlines/" + model_name + ".vtp"
+    params.centerlines_file = "../../junction_ml/data/centerlines_old/" + model_name + ".vtp"
     params.model_order = 0
     solver.read_solver_file("vmr_test_cases/"+junction_type+ "/input_files/" + params.solver_file_name)
     params.time_range = (solver.inflow.tc * (solver.simulation_params['number_of_cardiac_cycles'] - 1), solver.inflow.tc * solver.simulation_params['number_of_cardiac_cycles'])
@@ -56,11 +56,11 @@ def project_results_all(junction_type):
         print("\nNow projecting " + model_name + " results onto centerlines.")
 
         try:
-            project_results(junction_type = "normal_0d", model_name = model_name)
+            project_results(junction_type = junction_type, model_name = model_name)
             print("Projection successfull!")
         except:
             print("Error in centerline projection.  Skipping model.")
             import pdb; pdb.set_trace()
             continue
 
-project_results_all(junction_type = "normal_0d")
+project_results_all(junction_type = "tp_0d")
